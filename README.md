@@ -10,6 +10,12 @@ Every device receives a Ping availability check when it is created. The interval
 
 Ping results record availability, response time, and packet loss. The **Monitoring** page shows current state, latest latency, polling interval, last check time, and the latest 30 response-time samples. Device profile fields are included now and display placeholders until SSH profiling is implemented.
 
+## Device management and groups
+
+The **Devices** and **Monitoring** pages share a management toolbar. Devices can be searched by name, address, description, OS, vendor, model, or group and filtered simultaneously by state, operating system, and custom group.
+
+Custom groups are reusable and a device can belong to multiple groups. The device editor manages its identity, address, description, enabled state, Ping interval, profile metadata, and group memberships. Manually supplied profile values use the same fields that future SSH profiling will populate.
+
 ## Scalable monitoring storage
 
 HedgeSight stores availability results, generic numeric metrics, interface counters, rollups, and configuration snapshots separately. Interface counters use PostgreSQL numeric values so 64-bit SNMP counters are not truncated by JavaScript. Daily PostgreSQL partitions are prepared automatically for raw interface and metric samples.

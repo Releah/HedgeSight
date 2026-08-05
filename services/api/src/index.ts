@@ -60,14 +60,34 @@ app.get("/api/monitoring", async (_request, response) => {
     d.profile_source AS "profileSource",d.profiled_at AS "profiledAt",p.id AS "pingCheckId",
     p.interval_seconds AS "intervalSeconds",p.last_status AS "pingStatus",p.last_run_at AS "lastRunAt",
     latest.latency_ms AS "latencyMs",COALESCE((latest.metrics->>'packetLossPercent')::double precision,0) AS "packetLossPercent",
-    COALESCE(history.points,'[]'::json) AS history
+    COALESCE(history.points,'[]'::json) AS history,COALESCE(groups.items,'[]'::json) AS groups,d.enabled
     FROM devices d
     LEFT JOIN LATERAL (SELECT * FROM checks WHERE device_id=d.id AND kind='ping' ORDER BY created_at LIMIT 1) p ON true
     LEFT JOIN LATERAL (SELECT latency_ms,metrics FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 1) latest ON true
     LEFT JOIN LATERAL (SELECT json_agg(json_build_object('timestamp',x.finished_at,'latencyMs',x.latency_ms,'status',x.status) ORDER BY x.finished_at) AS points
       FROM (SELECT finished_at,latency_ms,status FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 30) x) history ON true
+    LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',g.id,'name',g.name,'color',g.color) ORDER BY g.name) AS items
+      FROM device_group_memberships m JOIN device_groups g ON g.id=m.group_id WHERE m.device_id=d.id) groups ON true
     ORDER BY d.name`);
   response.json(result.rows);
+});
+
+app.get("/api/groups", async (_request, response) => {
+  const result = await pool.query(`SELECT g.id,g.name,g.color,count(m.device_id)::int AS "deviceCount"
+    FROM device_groups g LEFT JOIN device_group_memberships m ON m.group_id=g.id GROUP BY g.id ORDER BY g.name`);
+  response.json(result.rows);
+});
+
+app.post("/api/groups", async (request, response) => {
+  const parsed = z.object({ name: z.string().trim().min(1).max(80), color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#41d69b") }).safeParse(request.body);
+  if (!parsed.success) return response.status(400).json({ error: "Invalid group", issues: parsed.error.issues });
+  const result = await pool.query(`INSERT INTO device_groups(name,color) VALUES($1,$2)
+    ON CONFLICT(name) DO UPDATE SET color=EXCLUDED.color RETURNING *`, [parsed.data.name,parsed.data.color]);
+  return response.status(201).json(result.rows[0]);
+});
+
+app.delete("/api/groups/:groupId", async (request, response) => {
+  await pool.query("DELETE FROM device_groups WHERE id=$1", [request.params.groupId]); return response.status(204).end();
 });
 
 const deviceSchema = z.object({
@@ -89,6 +109,32 @@ app.post("/api/devices", async (request, response) => {
     await client.query(`INSERT INTO checks(device_id,name,kind,interval_seconds,timeout_ms,config)
       VALUES($1,'Ping availability','ping',$2,5000,'{}'::jsonb)`, [result.rows[0].id,pingIntervalSeconds]);
     await client.query("COMMIT"); return response.status(201).json(result.rows[0]);
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+});
+
+const deviceUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120), address: z.string().trim().min(1).max(255),
+  description: z.string().max(1000).default(""), enabled: z.boolean(), pingIntervalSeconds: z.number().int().min(10).max(86400),
+  osName: z.string().trim().max(120).nullable().optional(), osVersion: z.string().trim().max(120).nullable().optional(),
+  deviceType: z.string().trim().max(120).nullable().optional(), vendor: z.string().trim().max(120).nullable().optional(),
+  model: z.string().trim().max(120).nullable().optional(), groupIds: z.array(z.string().uuid()).max(100).default([]),
+});
+
+app.put("/api/devices/:deviceId", async (request, response) => {
+  const parsed = deviceUpdateSchema.safeParse(request.body);
+  if (!parsed.success) return response.status(400).json({ error: "Invalid device", issues: parsed.error.issues });
+  const v = parsed.data; const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const device = await client.query(`UPDATE devices SET name=$2,address=$3,description=$4,enabled=$5,os_name=$6,os_version=$7,
+      device_type=$8,vendor=$9,model=$10,profile_source=CASE WHEN $6::text IS NOT NULL OR $8::text IS NOT NULL THEN 'manual' ELSE profile_source END,
+      profiled_at=CASE WHEN $6::text IS NOT NULL OR $8::text IS NOT NULL THEN now() ELSE profiled_at END,updated_at=now() WHERE id=$1 RETURNING *`,
+      [request.params.deviceId,v.name,v.address,v.description,v.enabled,v.osName || null,v.osVersion || null,v.deviceType || null,v.vendor || null,v.model || null]);
+    if (!device.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Device not found" }); }
+    await client.query("UPDATE checks SET interval_seconds=$2,next_run_at=LEAST(next_run_at,now()),updated_at=now() WHERE device_id=$1 AND kind='ping'", [request.params.deviceId,v.pingIntervalSeconds]);
+    await client.query("DELETE FROM device_group_memberships WHERE device_id=$1", [request.params.deviceId]);
+    if (v.groupIds.length) await client.query("INSERT INTO device_group_memberships(device_id,group_id) SELECT $1,unnest($2::uuid[])", [request.params.deviceId,v.groupIds]);
+    await client.query("COMMIT"); return response.json(device.rows[0]);
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
 
