@@ -20,6 +20,12 @@ Operators can select one or more nodes on the **Monitoring** page and place them
 
 Polling and metric collection continue during maintenance, but down results do not raise new incidents and maintained nodes are excluded from outage counts only between the configured start and estimated end. Once that boundary passes, an unavailable node counts as downtime and raises an incident; HedgeSight adds one system update naming the expired change and assigned manager. The overdue change remains visible until the manager or an administrator returns it to service. The unauthenticated status page publishes the change reference, public description, prominently labelled start and estimated end, state, and affected node count without exposing node or manager identities.
 
+## Linux SSH profiling and credentials
+
+Operators can create write-only SSH password credentials under **Settings → Credentials**, then assign one to a device from its edit screen. Passwords are encrypted in PostgreSQL with `CONFIG_ENCRYPTION_KEY`, are never returned to the browser, and are decrypted only into the job leased by an authenticated worker. Use a long, unique production value for `CONFIG_ENCRYPTION_KEY`; changing it later requires re-entering stored secrets.
+
+SSH profiling uses a new short-lived connection for each run and executes a fixed read-only Linux inventory. It collects hostname, OS and kernel, logical CPU count, total memory, uptime, filesystems and usage, plus network interface state, MAC address, MTU, and advertised speed where available. The server host key is trusted on the first successful connection and then pinned; a later mismatch fails the profile rather than silently trusting a replacement. Device inventory is shown behind **More information**, while monitorable capacity and uptime values appear in the expanded Monitoring row. A dedicated least-privilege Linux account without sudo access is recommended.
+
 ## Incident workflow
 
 A failed check raises an **Open** incident. An operator can claim a currently down incident, moving it to **Under investigation** and displaying their name on the Overview and incident pages. Successful polling records the recovery timestamp and moves the incident to **Pending investigation**; recovery does not automatically close it.

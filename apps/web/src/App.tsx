@@ -35,6 +35,7 @@ import {
   Trash2,
   Users,
   Wrench,
+  LockKeyhole,
   X,
 } from "lucide-react";
 
@@ -86,6 +87,7 @@ type MonitoringDevice = {
   maintenanceStartedAt: string | null;
   maintenanceEstimatedEndAt: string | null;
   changeStatus: "scheduled"|"active"|"overdue"|null;
+  sshCredentialId:string|null;sshCredentialName:string|null;sshPort:number|null;sshEnabled:boolean|null;sshIntervalSeconds:number|null;sshStatus:string|null;sshLastRunAt:string|null;sshProfile:Record<string,unknown>;sshProfiledAt:string|null;
   uptimeSeconds: string | null;
   downtimeSeconds: string | null;
   maintenanceDowntimeSeconds: string | null;
@@ -136,7 +138,8 @@ type StorageStatus = {
     rollupsWritten: number;
   } | null;
 };
-type SettingsTab = "data" | "accounts" | "authentication" | "system";
+type SettingsTab = "data" | "credentials" | "accounts" | "authentication" | "system";
+type StoredCredential={id:string;name:string;username:string;deviceCount:number;createdAt:string;updatedAt:string};
 type Account = {
   id: string;
   email: string;
@@ -1099,12 +1102,15 @@ export function PrivateApp({
   const [groupFilter, setGroupFilter] = useState("all");
   const [newGroupName, setNewGroupName] = useState("");
   const [editing, setEditing] = useState<MonitoringDevice | null>(null);
+  const [deviceDetail,setDeviceDetail]=useState<MonitoringDevice|null>(null);
   const [expandedDevice, setExpandedDevice] = useState<string | null>(null);
   const [interfaceStats, setInterfaceStats] = useState<
     Record<string, InterfaceStats[]>
   >({});
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("data");
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [credentials,setCredentials]=useState<StoredCredential[]>([]);
+  const [credentialError,setCredentialError]=useState("");
   const [authenticationSettings, setAuthenticationSettings] =
     useState<AuthenticationSettings | null>(null);
   const [accountError, setAccountError] = useState("");
@@ -1211,6 +1217,7 @@ export function PrivateApp({
       fetch("/api/settings/authentication")
         .then((r) => (r.ok ? r.json() : null))
         .then(setAuthenticationSettings),
+      fetch("/api/credentials").then(r=>r.ok?r.json():[]).then(setCredentials),
     ]);
   }, []);
   useEffect(() => {
@@ -1464,6 +1471,7 @@ export function PrivateApp({
         vendor: data.get("vendor") || null,
         model: data.get("model") || null,
         groupIds: data.getAll("groupIds"),
+        sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),
       }),
     });
     if (response.ok) {
@@ -1471,6 +1479,8 @@ export function PrivateApp({
       await refresh();
     }
   }
+  async function createCredential(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form);const response=await fetch("/api/credentials",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:data.get("name"),username:data.get("username"),password:data.get("password")})});if(response.ok){form.reset();setCredentialError("");setCredentials(await (await fetch("/api/credentials")).json());}else setCredentialError((await response.json()).error??"Unable to save credential");}
+  async function deleteCredential(item:StoredCredential){if(!confirm(`Delete credential ${item.name}?`))return;const response=await fetch(`/api/credentials/${item.id}`,{method:"DELETE"});if(response.ok)setCredentials(current=>current.filter(value=>value.id!==item.id));else setCredentialError((await response.json()).error??"Unable to delete credential");}
   function toggleInterfaces(deviceId: string) {
     setExpandedDevice((current) => (current === deviceId ? null : deviceId));
   }
@@ -1993,6 +2003,7 @@ export function PrivateApp({
                                   <div><small>AVAILABILITY</small><strong>{device.uptimePercent===null?"—":`${Number(device.uptimePercent).toFixed(3)}%`}</strong></div>
                                   <span>Unknown and maintenance-window time are excluded from availability. Maintenance outages are tracked separately.</span>
                                 </section>
+                                {device.sshProfiledAt&&<section className="ssh-metric-strip"><div><small>SSH PROFILE</small><strong>{device.sshStatus??"unknown"}</strong><span>{relativeTime(device.sshProfiledAt)}</span></div><div><small>CPU</small><strong>{String(device.sshProfile.cpuCount??"—")} cores</strong></div><div><small>MEMORY</small><strong>{formatBytes(String(device.sshProfile.memoryBytes??0))}</strong></div><div><small>SYSTEM UPTIME</small><strong>{availabilityDuration(String(device.sshProfile.uptimeSeconds??0))}</strong></div><div><small>HIGHEST DISK USE</small><strong>{Math.max(0,...(((device.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map(item=>Number(item.usedPercent??0))))}%</strong></div></section>}
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
                                     Loading interfaces…
@@ -2161,6 +2172,7 @@ export function PrivateApp({
                   >
                     <Pencil size={14} /> Edit configuration
                   </button>
+                  <button className="device-edit device-more" onClick={()=>setDeviceDetail(device)}><Eye size={14}/> More information</button>
                 </article>
               ))}
             </div>
@@ -2711,6 +2723,9 @@ export function PrivateApp({
                   <small>Storage, rollups and lifecycle</small>
                 </span>
               </button>
+              <button className={settingsTab === "credentials" ? "active" : ""} onClick={() => setSettingsTab("credentials")}>
+                <LockKeyhole /> <span><strong>Credentials</strong><small>SSH accounts and assignments</small></span>
+              </button>
               <button
                 className={settingsTab === "accounts" ? "active" : ""}
                 onClick={() => setSettingsTab("accounts")}
@@ -2810,6 +2825,7 @@ export function PrivateApp({
                   </Panel>
                 </>
               )}
+              {settingsTab === "credentials"&&<><div className="settings-title"><p className="eyebrow">SECRET STORE</p><h2>Device credentials</h2><p>Encrypted, write-only credentials used by polling workers for short-lived SSH sessions.</p></div>{credentialError&&<div className="error">{credentialError}</div>}<Panel title="Stored credentials" subtitle={`${credentials.length} encrypted credential${credentials.length===1?"":"s"}`} className="full-panel"><div className="table-wrap"><table><thead><tr><th>NAME</th><th>USERNAME</th><th>ASSIGNED DEVICES</th><th>UPDATED</th><th></th></tr></thead><tbody>{credentials.map(item=><tr key={item.id}><td><strong>{item.name}</strong></td><td className="mono">{item.username}</td><td>{item.deviceCount}</td><td>{relativeTime(item.updatedAt)}</td><td><button className="icon-button danger" disabled={item.deviceCount>0} onClick={()=>void deleteCredential(item)} title={item.deviceCount?"Remove assignments first":"Delete credential"}><Trash2 size={14}/></button></td></tr>)}</tbody></table></div></Panel><Panel title="Add SSH credential" subtitle="The password is encrypted immediately and cannot be read back through the interface." className="full-panel"><form className="account-form" onSubmit={createCredential}><label>Credential name<input name="name" required placeholder="Linux monitoring account"/></label><label>Username<input name="username" required autoComplete="off"/></label><label>Password<input name="password" type="password" required autoComplete="new-password"/></label><button className="primary"><LockKeyhole size={15}/>Encrypt and save</button></form></Panel></>}
               {settingsTab === "accounts" && (
                 <>
                   <div className="settings-title">
@@ -3231,6 +3247,7 @@ export function PrivateApp({
           </section>
         </div>
       )}
+      {deviceDetail&&<div className="modal-backdrop" onMouseDown={()=>setDeviceDetail(null)}><section className="modal wide-modal device-profile-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setDeviceDetail(null)}><X/></button><p className="eyebrow">DEVICE PROFILE · {deviceDetail.sshProfiledAt?`COLLECTED ${relativeTime(deviceDetail.sshProfiledAt)}`:"NOT YET COLLECTED"}</p><h2>{String(deviceDetail.sshProfile.hostname??deviceDetail.name)}</h2><p>{String(deviceDetail.sshProfile.osName??deviceDetail.osName??"Operating system unknown")} {String(deviceDetail.sshProfile.osVersion??deviceDetail.osVersion??"")}</p><div className="profile-fact-grid"><article><small>CPU</small><strong>{String(deviceDetail.sshProfile.cpuCount??"—")} logical cores</strong></article><article><small>MEMORY</small><strong>{formatBytes(String(deviceDetail.sshProfile.memoryBytes??0))}</strong></article><article><small>UPTIME</small><strong>{availabilityDuration(String(deviceDetail.sshProfile.uptimeSeconds??0))}</strong></article><article><small>KERNEL</small><strong>{String(deviceDetail.sshProfile.kernel??"—")}</strong></article></div><h3>Filesystems</h3><div className="profile-table">{((deviceDetail.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map((disk,index)=><article key={index}><div><strong>{String(disk.mount)}</strong><small>{String(disk.filesystem)}</small></div><span>{formatBytes(String(disk.usedBytes))} / {formatBytes(String(disk.totalBytes))}</span><b>{String(disk.usedPercent)}%</b></article>)}</div><h3>Network adapters</h3><div className="profile-table">{((deviceDetail.sshProfile.interfaces as Array<Record<string,unknown>>) || []).map((adapter,index)=><article key={index}><div><strong>{String(adapter.name)}</strong><small>{String(adapter.macAddress??"")}</small></div><span>MTU {String(adapter.mtu??"—")}</span><b>{String(adapter.state??"unknown")}</b></article>)}</div><div className="secret-note"><LockKeyhole size={16}/><span>SSH host key: {deviceDetail.sshCredentialName?"trusted and pinned after first successful profile":"SSH profiling is not configured"}</span></div></section></div>}
       {editing && (
         <div className="modal-backdrop" onMouseDown={() => setEditing(null)}>
           <section
@@ -3306,6 +3323,7 @@ export function PrivateApp({
                   placeholder="Linux"
                 />
               </label>
+              <fieldset className="full-field ssh-config"><legend>Linux SSH profiling</legend><label className="toggle-label"><input type="checkbox" name="sshEnabled" defaultChecked={Boolean(editing.sshEnabled)}/> Enable periodic SSH profile collection</label><label>Stored credential<select name="sshCredentialId" defaultValue={editing.sshCredentialId??""}><option value="">Select credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label><label>SSH port<input name="sshPort" type="number" min="1" max="65535" defaultValue={editing.sshPort??22}/></label><label>Profile interval<select name="sshIntervalSeconds" defaultValue={editing.sshIntervalSeconds??900}><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option><option value="21600">6 hours</option></select></label><small>Create credentials under Settings → Credentials. Secrets are never displayed after saving.</small></fieldset>
               <label>
                 OS version
                 <input

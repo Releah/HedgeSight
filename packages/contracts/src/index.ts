@@ -20,7 +20,7 @@ export interface ProbeResult {
   latencyMs?: number;
   message?: string;
   metrics?: Record<string, number>;
-  observations?: Record<string, string | number | boolean | null>;
+  observations?: Record<string, unknown>;
 }
 
 export interface InterfaceObservation {

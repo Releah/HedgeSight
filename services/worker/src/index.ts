@@ -6,7 +6,7 @@ const token = process.env.WORKER_TOKEN ?? "local-development-token";
 const workerName = process.env.WORKER_NAME ?? `worker-${process.pid}`;
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const pollInterval = Number(process.env.JOB_POLL_INTERVAL_MS ?? 3000);
-const capabilities = ["ping", "http"];
+const capabilities = ["ping", "http", "ssh"];
 
 async function lease(): Promise<ProbeJob | null> {
   const response = await fetch(`${apiUrl}/api/workers/lease`, {

@@ -337,19 +337,26 @@ app.get("/api/devices", async (_request, response) => {
   response.json(result.rows);
 });
 
+app.get("/api/credentials",async(_request,response)=>{if(!requireOperator(response))return;const result=await pool.query(`SELECT c.id,c.name,c.username,c.created_at AS "createdAt",c.updated_at AS "updatedAt",count(d.device_id)::int AS "deviceCount" FROM credentials c LEFT JOIN device_ssh_credentials d ON d.credential_id=c.id GROUP BY c.id ORDER BY c.name`);response.json(result.rows);});
+app.post("/api/credentials",async(request,response)=>{if(!requireOperator(response))return;const parsed=z.object({name:z.string().trim().min(1).max(120),username:z.string().trim().min(1).max(120),password:z.string().min(1).max(2000)}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Name, username and password are required"});try{const result=await pool.query(`INSERT INTO credentials(name,username,password_encrypted,created_by_user_id) VALUES($1,$2,pgp_sym_encrypt($3,$4),$5) RETURNING id`,[parsed.data.name,parsed.data.username,parsed.data.password,process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me",response.locals.user.id]);return response.status(201).json(result.rows[0]);}catch(error){if((error as {code?:string}).code==="23505")return response.status(409).json({error:"A credential with that name already exists"});throw error;}});
+app.put("/api/credentials/:credentialId",async(request,response)=>{if(!requireOperator(response))return;const parsed=z.object({name:z.string().trim().min(1).max(120),username:z.string().trim().min(1).max(120),password:z.string().max(2000).default("")}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Name and username are required"});const result=await pool.query(`UPDATE credentials SET name=$2,username=$3,password_encrypted=CASE WHEN $4='' THEN password_encrypted ELSE pgp_sym_encrypt($4,$5) END,updated_at=now() WHERE id=$1 RETURNING id`,[request.params.credentialId,parsed.data.name,parsed.data.username,parsed.data.password,process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me"]);return response.json({updated:Boolean(result.rowCount)});});
+app.delete("/api/credentials/:credentialId",async(request,response)=>{if(!requireOperator(response))return;try{const result=await pool.query(`DELETE FROM credentials WHERE id=$1 RETURNING id`,[request.params.credentialId]);if(!result.rowCount)return response.status(404).json({error:"Credential not found"});return response.status(204).end();}catch(error){if((error as {code?:string}).code==="23503")return response.status(409).json({error:"Remove this credential from assigned devices first"});throw error;}});
+
 app.get("/api/monitoring", async (_request, response) => {
   const result = await pool.query(`SELECT d.id,d.name,d.address,d.description,d.status,
     d.os_name AS "osName",d.os_version AS "osVersion",d.device_type AS "deviceType",d.vendor,d.model,
-    d.profile_source AS "profileSource",d.profiled_at AS "profiledAt",p.id AS "pingCheckId",
+    d.profile_source AS "profileSource",d.profiled_at AS "profiledAt",d.ssh_profile AS "sshProfile",d.ssh_profiled_at AS "sshProfiledAt",p.id AS "pingCheckId",
     p.interval_seconds AS "intervalSeconds",p.last_status AS "pingStatus",p.last_run_at AS "lastRunAt",
     COALESCE(p.config->>'mode','icmp') AS "reachabilityMode",COALESCE((p.config->>'port')::integer,22) AS "tcpPort",
     latest.latency_ms AS "latencyMs",COALESCE((latest.metrics->>'packetLossPercent')::double precision,0) AS "packetLossPercent",
     COALESCE(history.points,'[]'::json) AS history,COALESCE(groups.items,'[]'::json) AS groups,d.enabled,
     maintenance.id AS "changeId",maintenance.change_reference AS "changeReference",maintenance.public_description AS "changeDescription",maintenance.manager_name AS "changeManagerName",maintenance.started_at AS "maintenanceStartedAt",
-    maintenance.estimated_end_at AS "maintenanceEstimatedEndAt",maintenance.change_status AS "changeStatus",
+    maintenance.estimated_end_at AS "maintenanceEstimatedEndAt",maintenance.change_status AS "changeStatus",ssh.credential_id AS "sshCredentialId",ssh.port AS "sshPort",cred.name AS "sshCredentialName",sc.enabled AS "sshEnabled",sc.interval_seconds AS "sshIntervalSeconds",sc.last_status AS "sshStatus",sc.last_run_at AS "sshLastRunAt",
     availability.uptime_seconds AS "uptimeSeconds",availability.downtime_seconds AS "downtimeSeconds",availability.maintenance_downtime_seconds AS "maintenanceDowntimeSeconds",availability.uptime_percent AS "uptimePercent"
     FROM devices d
     LEFT JOIN LATERAL (SELECT * FROM checks WHERE device_id=d.id AND kind='ping' ORDER BY created_at LIMIT 1) p ON true
+    LEFT JOIN LATERAL (SELECT * FROM checks WHERE device_id=d.id AND kind='ssh' ORDER BY created_at LIMIT 1) sc ON true
+    LEFT JOIN device_ssh_credentials ssh ON ssh.device_id=d.id LEFT JOIN credentials cred ON cred.id=ssh.credential_id
     LEFT JOIN LATERAL (SELECT latency_ms,metrics FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 1) latest ON true
     LEFT JOIN LATERAL (SELECT json_agg(json_build_object('timestamp',x.finished_at,'latencyMs',x.latency_ms,'status',x.status) ORDER BY x.finished_at) AS points
       FROM (SELECT finished_at,latency_ms,status FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 30) x) history ON true
@@ -494,6 +501,7 @@ const deviceUpdateSchema = z.object({
   deviceType: z.string().trim().max(120).nullable().optional(), vendor: z.string().trim().max(120).nullable().optional(),
   model: z.string().trim().max(120).nullable().optional(), groupIds: z.array(z.string().uuid()).max(100).default([]),
   reachabilityMode: z.enum(["icmp","tcp"]), tcpPort: z.number().int().min(1).max(65535),
+  sshEnabled:z.boolean().default(false),sshCredentialId:z.string().uuid().nullable().default(null),sshPort:z.number().int().min(1).max(65535).default(22),sshIntervalSeconds:z.number().int().min(60).max(86400).default(900),
 });
 
 app.put("/api/devices/:deviceId", async (request, response) => {
@@ -510,6 +518,7 @@ app.put("/api/devices/:deviceId", async (request, response) => {
     await client.query("UPDATE checks SET interval_seconds=$2,config=$3,next_run_at=LEAST(next_run_at,now()),updated_at=now() WHERE device_id=$1 AND kind='ping'", [request.params.deviceId,v.pingIntervalSeconds,{mode:v.reachabilityMode,port:v.tcpPort}]);
     await client.query("DELETE FROM device_group_memberships WHERE device_id=$1", [request.params.deviceId]);
     if (v.groupIds.length) await client.query("INSERT INTO device_group_memberships(device_id,group_id) SELECT $1,unnest($2::uuid[])", [request.params.deviceId,v.groupIds]);
+    if(v.sshEnabled&&v.sshCredentialId){await client.query(`INSERT INTO device_ssh_credentials(device_id,credential_id,port) VALUES($1,$2,$3) ON CONFLICT(device_id) DO UPDATE SET credential_id=$2,port=$3,host_key_fingerprint=CASE WHEN device_ssh_credentials.credential_id=$2 THEN device_ssh_credentials.host_key_fingerprint ELSE NULL END`,[request.params.deviceId,v.sshCredentialId,v.sshPort]);await client.query(`INSERT INTO checks(device_id,name,kind,enabled,interval_seconds,timeout_ms,config) SELECT $1,'Linux SSH profile','ssh',true,$2,20000,'{}' WHERE NOT EXISTS(SELECT 1 FROM checks WHERE device_id=$1 AND kind='ssh')`,[request.params.deviceId,v.sshIntervalSeconds]);await client.query(`UPDATE checks SET enabled=true,interval_seconds=$2,next_run_at=now(),updated_at=now() WHERE device_id=$1 AND kind='ssh'`,[request.params.deviceId,v.sshIntervalSeconds]);}else{await client.query(`UPDATE checks SET enabled=false,updated_at=now() WHERE device_id=$1 AND kind='ssh'`,[request.params.deviceId]);await client.query(`DELETE FROM device_ssh_credentials WHERE device_id=$1`,[request.params.deviceId]);}
     await client.query("COMMIT"); return response.json(device.rows[0]);
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
@@ -555,8 +564,8 @@ app.post("/api/workers/lease", async (request, response) => {
     }
     const details = await client.query(`SELECT j.id, c.id AS "checkId", d.id AS "deviceId", c.kind,
       CASE WHEN c.kind='http' THEN COALESCE(c.config->>'url', d.address) ELSE d.address END AS target,
-      c.timeout_ms AS "timeoutMs", c.config, j.leased_until AS "leasedUntil"
-      FROM probe_jobs j JOIN checks c ON c.id=j.check_id JOIN devices d ON d.id=c.device_id WHERE j.id=$1`, [job.rows[0].id]);
+      c.timeout_ms AS "timeoutMs",CASE WHEN c.kind='ssh' THEN c.config||jsonb_build_object('username',cred.username,'password',pgp_sym_decrypt(cred.password_encrypted,$2),'port',ssh.port,'hostKeyFingerprint',ssh.host_key_fingerprint) ELSE c.config END AS config,j.leased_until AS "leasedUntil"
+      FROM probe_jobs j JOIN checks c ON c.id=j.check_id JOIN devices d ON d.id=c.device_id LEFT JOIN device_ssh_credentials ssh ON ssh.device_id=d.id LEFT JOIN credentials cred ON cred.id=ssh.credential_id WHERE j.id=$1`, [job.rows[0].id,process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me"]);
     await client.query("COMMIT");
     return response.json(details.rows[0]);
   } catch (error) {
@@ -571,7 +580,7 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
     workerName: z.string(), status: z.enum(["up", "down", "degraded", "unknown"]),
     startedAt: z.string().datetime(), finishedAt: z.string().datetime(), latencyMs: z.number().optional(),
     message: z.string().max(4000).optional(), metrics: z.record(z.string(), z.number()).default({}),
-    observations: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+    observations: z.record(z.string(), z.unknown()).default({}),
   });
   const parsed = resultSchema.safeParse(request.body);
   if (!parsed.success) return response.status(400).json({ error: "Invalid result", issues: parsed.error.issues });
@@ -579,7 +588,7 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const job = await client.query(`SELECT j.check_id, j.worker_id, c.device_id, c.last_status
+    const job = await client.query(`SELECT j.check_id, j.worker_id, c.device_id, c.last_status,c.kind
       FROM probe_jobs j JOIN checks c ON c.id=j.check_id WHERE j.id=$1 AND j.state='leased' FOR UPDATE`, [request.params.jobId]);
     if (!job.rowCount) { await client.query("ROLLBACK"); return response.status(409).json({ error: "Job is not leased" }); }
     const row = job.rows[0];
@@ -592,6 +601,8 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
       [value.finishedAt,row.device_id,row.check_id,value.metrics]);
     await client.query("UPDATE probe_jobs SET state='completed', completed_at=now() WHERE id=$1", [request.params.jobId]);
     await client.query("UPDATE checks SET last_status=$2, last_run_at=$3, updated_at=now() WHERE id=$1", [row.check_id, value.status, value.finishedAt]);
+    if(row.kind==="ssh"&&value.status==="up")await client.query(`UPDATE devices SET os_name=COALESCE(NULLIF($2,''),os_name),os_version=COALESCE(NULLIF($3,''),os_version),device_type='Server',profile_source='ssh',profiled_at=$4,ssh_profile=$5,ssh_profiled_at=$4,updated_at=now() WHERE id=$1`,[row.device_id,String(value.observations.osName??"Linux"),String(value.observations.osVersion??""),value.finishedAt,value.observations]);
+    if(row.kind==="ssh"&&value.status==="up"&&value.observations.hostKeyFingerprint)await client.query(`UPDATE device_ssh_credentials SET host_key_fingerprint=COALESCE(host_key_fingerprint,$2) WHERE device_id=$1`,[row.device_id,String(value.observations.hostKeyFingerprint)]);
     const maintenance=await client.query(`SELECT 1 FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id
       WHERE m.device_id=$1 AND m.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now()`,[row.device_id]);
     if (value.status === "down" && !maintenance.rowCount) {

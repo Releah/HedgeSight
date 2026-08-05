@@ -8,7 +8,7 @@ export async function scheduleDueChecks(): Promise<number> {
       JOIN devices d ON d.id = c.device_id
       WHERE c.enabled = true
         AND d.enabled = true
-        AND c.kind IN ('ping', 'http')
+        AND c.kind IN ('ping', 'http', 'ssh')
         AND c.next_run_at <= now()
       FOR UPDATE SKIP LOCKED
     ), inserted AS (
