@@ -23,6 +23,8 @@ services:
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
     ports:
       - "${APP_PORT:-8080}:8080"
+    volumes:
+      - app-data:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,3 +83,4 @@ services:
 
 volumes:
   postgres-data:
+  app-data:

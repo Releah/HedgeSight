@@ -16,12 +16,12 @@ RUN pnpm --filter @hedgesight/contracts build && pnpm --filter @hedgesight/web b
 RUN pnpm --filter @hedgesight/api deploy --prod --legacy /output/api
 
 FROM node:24-alpine AS app
-RUN addgroup -S hedgesight && adduser -S hedgesight -G hedgesight
+RUN addgroup -S hedgesight && adduser -S hedgesight -G hedgesight && mkdir -p /data && chown hedgesight:hedgesight /data
 WORKDIR /app
 COPY --from=build --chown=hedgesight:hedgesight /output/api ./
 COPY --from=build --chown=hedgesight:hedgesight /workspace/apps/web/dist ./apps/web/dist
 COPY --from=build --chown=hedgesight:hedgesight /workspace/migrations ./migrations
-ENV NODE_ENV=production APP_PORT=8080 WEB_ROOT=apps/web/dist MIGRATIONS_DIR=migrations
+ENV NODE_ENV=production APP_PORT=8080 WEB_ROOT=apps/web/dist MIGRATIONS_DIR=migrations DATABASE_CONFIG_FILE=/data/database-url
 USER hedgesight
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

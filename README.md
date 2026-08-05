@@ -30,6 +30,12 @@ The device editor's **Advanced Linux monitoring** section lists discovered CPUs,
 
 Every discovered component is individually selectable. Unselected components remain in inventory for later re-enablement but stop contributing new samples and alerts. Selected CPU, RAM, disk and interface cards in Monitoring are interactive: clicking a card opens its historical graph with 1-hour, 6-hour, 24-hour, 7-day and 30-day windows. Interface graphs plot inbound and outbound throughput on a shared scale.
 
+## Configuration portability and external PostgreSQL
+
+Administrators can export a portable configuration package from **Settings → System**. It contains nodes, groups, checks, component selections, thresholds and retention settings. Imports support merge or replace mode. Packages intentionally exclude metric history, incidents, users and all secret values; SSH assignments reference a credential by name and are restored only when that credential already exists on the destination.
+
+During first-run setup, **Use remote PostgreSQL** accepts a `postgresql://` connection URL before the administrator is created. Existing installations can switch under **Settings → System** after exporting configuration. HedgeSight tests the target, applies all schema migrations, writes the URL to a permission-restricted file in the persistent `app-data` volume, then restarts. A database switch does not copy data: import the configuration package after creating or signing into the administrator on the target database. For hosted PostgreSQL, use the provider's TLS connection URL, normally with `sslmode=require` or `sslmode=verify-full`.
+
 ## Incident workflow
 
 A failed check raises an **Open** incident. An operator can claim a currently down incident, moving it to **Under investigation** and displaying their name on the Overview and incident pages. Successful polling records the recovery timestamp and moves the incident to **Pending investigation**; recovery does not automatically close it.

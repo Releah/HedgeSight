@@ -141,6 +141,7 @@ type StorageStatus = {
 };
 type SettingsTab = "data" | "credentials" | "accounts" | "authentication" | "system";
 type StoredCredential={id:string;name:string;username:string;deviceCount:number;createdAt:string;updatedAt:string};
+type DatabaseStatus={source:string;host:string;port:string;database:string;tls:string};
 type ChartRequest={deviceId:string;title:string;kind:"metric"|"interface";key?:string;interfaceId?:string;unit:string};
 type ChartPoint={timestamp:string;value?:number;inBps?:number|null;outBps?:number|null;utilizationInPercent?:number|null;utilizationOutPercent?:number|null};
 type Account = {
@@ -941,6 +942,9 @@ function Login({
       ? "Single sign-on could not be completed."
       : "",
   );
+  const [databaseSetup,setDatabaseSetup]=useState(false);
+  const [databaseBusy,setDatabaseBusy]=useState(false);
+  async function configureDatabase(event:FormEvent<HTMLFormElement>){event.preventDefault();const data=new FormData(event.currentTarget);setDatabaseBusy(true);const response=await fetch("/api/auth/database",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({connectionString:data.get("connectionString")})});if(response.ok){setError("");setTimeout(()=>location.reload(),2500);}else{setError((await response.json()).error??"Unable to connect to PostgreSQL");setDatabaseBusy(false);}}
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -994,6 +998,8 @@ function Login({
           </p>
         </div>
         {error && <div className="error">{error}</div>}
+        {status.setupRequired&&<button className="database-setup-toggle" onClick={()=>setDatabaseSetup(value=>!value)}><Database size={15}/>{databaseSetup?"Use bundled database":"Use remote PostgreSQL"}</button>}
+        {status.setupRequired&&databaseSetup?<form onSubmit={configureDatabase} className="database-setup-form"><label>PostgreSQL connection URL<input name="connectionString" type="password" required placeholder="postgresql://user:password@db.example.com:5432/hedgesight" autoComplete="off"/></label><small>HedgeSight will test the connection, create its schema, store the URL securely, and restart.</small><button className="primary" disabled={databaseBusy}>{databaseBusy?"Connecting…":"Connect database"}<ArrowRight size={16}/></button></form>:
         <form onSubmit={submit}>
           {status.setupRequired && (
             <label>
@@ -1018,7 +1024,7 @@ function Login({
             {status.setupRequired ? "Create account" : "Sign in"}
             <ArrowRight size={16} />
           </button>
-        </form>
+        </form>}
         {status.oidcEnabled && !status.setupRequired && (
           <>
             <div className="login-divider">
@@ -1117,6 +1123,8 @@ export function PrivateApp({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [credentials,setCredentials]=useState<StoredCredential[]>([]);
   const [credentialError,setCredentialError]=useState("");
+  const [databaseStatus,setDatabaseStatus]=useState<DatabaseStatus|null>(null);
+  const [configurationMessage,setConfigurationMessage]=useState("");
   const [authenticationSettings, setAuthenticationSettings] =
     useState<AuthenticationSettings | null>(null);
   const [accountError, setAccountError] = useState("");
@@ -1228,6 +1236,7 @@ export function PrivateApp({
         .then((r) => (r.ok ? r.json() : null))
         .then(setAuthenticationSettings),
       fetch("/api/credentials").then(r=>r.ok?r.json():[]).then(setCredentials),
+      fetch("/api/settings/database").then(r=>r.ok?r.json():null).then(setDatabaseStatus),
     ]);
   }, []);
   useEffect(() => {
@@ -1440,6 +1449,9 @@ export function PrivateApp({
         (await response.json()).error ?? "Unable to resolve linked incidents",
       );
   }
+  async function exportConfiguration(){const response=await fetch("/api/settings/configuration/export");if(!response.ok){setConfigurationMessage("Unable to export configuration");return;}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`hedgesight-configuration-${new Date().toISOString().slice(0,10)}.json`;link.click();URL.revokeObjectURL(url);setConfigurationMessage("Configuration package downloaded.");}
+  async function importConfiguration(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form),file=data.get("configuration") as File;if(!file?.size)return;try{const configuration=JSON.parse(await file.text()),response=await fetch("/api/settings/configuration/import",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:data.get("mode"),configuration})});const result=await response.json();if(!response.ok)throw new Error(result.error??"Import failed");setConfigurationMessage(`Imported ${result.imported} nodes${result.missingCredentials?`; ${result.missingCredentials} SSH credential assignments need reconnecting`:""}.`);form.reset();await refresh();}catch(error){setConfigurationMessage(error instanceof Error?error.message:"Unable to read configuration package");}}
+  async function switchDatabase(event:FormEvent<HTMLFormElement>){event.preventDefault();const data=new FormData(event.currentTarget);if(!confirm("Switch HedgeSight to this PostgreSQL database? The application will restart and data is not copied automatically."))return;const response=await fetch("/api/settings/database",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({connectionString:data.get("connectionString"),confirmed:true})});if(response.ok){setConfigurationMessage("Database connected. HedgeSight is restarting…");setTimeout(()=>location.assign("/login"),3000);}else setConfigurationMessage((await response.json()).error??"Unable to connect to PostgreSQL");}
   async function addDevice(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -3140,8 +3152,11 @@ export function PrivateApp({
                   <div className="settings-title">
                     <p className="eyebrow">PLATFORM</p>
                     <h2>System</h2>
-                    <p>Runtime status and background maintenance details.</p>
+                    <p>Runtime status, portability and database configuration.</p>
                   </div>
+                  {configurationMessage&&<div className="info-strip"><Database/><div><strong>Configuration</strong><p>{configurationMessage}</p></div></div>}
+                  <Panel title="Configuration export and import" subtitle="Move nodes, groups, checks, thresholds and retention settings between HedgeSight installations." className="full-panel"><div className="portable-config"><section><h3>Export configuration</h3><p>Downloads a portable JSON package. Metrics, incidents, users and secret credential values are intentionally excluded.</p><button className="primary" onClick={()=>void exportConfiguration()}><Archive size={15}/> Export configuration</button></section><form onSubmit={importConfiguration}><h3>Import configuration</h3><label>Configuration package<input name="configuration" type="file" accept="application/json,.json" required/></label><label>Import mode<select name="mode" defaultValue="merge"><option value="merge">Merge with existing nodes</option><option value="replace">Replace configured nodes</option></select></label><button className="secondary"><RefreshCw size={15}/> Import package</button></form></div></Panel>
+                  <Panel title="PostgreSQL database" subtitle="Remote database changes are applied after an automatic application restart." className="full-panel"><div className="database-current"><Database/><div><small>CURRENT DATABASE</small><strong>{databaseStatus?`${databaseStatus.host}:${databaseStatus.port} / ${databaseStatus.database}`:"Loading…"}</strong><span>{databaseStatus?.source==="managed-file"?"Managed through HedgeSight":"Provided by deployment environment"} · TLS {databaseStatus?.tls??"unspecified"}</span></div></div><form className="database-switch-form" onSubmit={switchDatabase}><label>Remote PostgreSQL connection URL<input name="connectionString" type="password" required autoComplete="off" placeholder="postgresql://user:password@database.example.com:5432/hedgesight?sslmode=require"/></label><p>Export configuration before switching. HedgeSight creates its schema on the target, but does not copy users, incidents, metrics, credentials or configuration automatically.</p><button className="primary"><Database size={15}/> Test, connect and restart</button></form></Panel>
                   <div className="setting-card">
                     <RefreshCw />
                     <div>
