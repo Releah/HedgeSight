@@ -20,6 +20,12 @@ A failed check raises an **Open** incident. An operator can claim a currently do
 
 Incident detail records the outage, recovery, and closure timestamps alongside attributed, timestamped operator updates. An incident can only be marked **Resolved** after monitoring has recovered and at least one update has been added. Overview incident rows link directly to the corresponding incident detail.
 
+The Overview keeps active incidents visible and places resolved history in a collapsed section. The Incidents page includes a scrollable 30-day activity timeline; selecting a count marker filters the incident table to that day.
+
+Failures are correlated at device level. Multiple failed checks become signals within the same device incident, and a recurrence shortly after closure reopens that incident. The default correlation window is five minutes and can be changed with `INCIDENT_CORRELATION_SECONDS`.
+
+Related device incidents can be coordinated through a **Major Incident** with an `MI-YYYY-NNNN` reference, impact statement, severity, owner, linked incidents, and a shared timestamped update stream.
+
 ## Device management and groups
 
 The **Devices** and **Monitoring** pages share a management toolbar. Devices can be searched by name, address, description, OS, vendor, model, or group and filtered simultaneously by state, operating system, and custom group.
