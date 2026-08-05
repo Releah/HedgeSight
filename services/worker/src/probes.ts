@@ -1,11 +1,31 @@
 import { execFile } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import type { ProbeJob, ProbeResult } from "@hedgesight/contracts";
 
 const execFileAsync = promisify(execFile);
 
 async function ping(job: ProbeJob): Promise<ProbeResult> {
+  if (job.config.mode === "tcp") {
+    const startedAt = new Date(); const start = performance.now(); const port = typeof job.config.port === "number" ? job.config.port : 22;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const socket = createConnection({ host: job.target, port });
+        socket.setTimeout(job.timeoutMs);
+        socket.once("connect", () => { socket.destroy(); resolve(); });
+        socket.once("timeout", () => { socket.destroy(); reject(new Error(`TCP ${port} timed out`)); });
+        socket.once("error", reject);
+      });
+      const latencyMs = performance.now() - start;
+      return { status:"up",startedAt:startedAt.toISOString(),finishedAt:new Date().toISOString(),latencyMs,
+        message:`TCP port ${port} accepted a connection`,metrics:{packetLossPercent:0,responseTimeMs:latencyMs},observations:{mode:"tcp",port} };
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      return { status:"down",startedAt:startedAt.toISOString(),finishedAt:new Date().toISOString(),latencyMs,
+        message:error instanceof Error ? error.message : `TCP ${port} failed`,metrics:{packetLossPercent:100,responseTimeMs:latencyMs},observations:{mode:"tcp",port} };
+    }
+  }
   const startedAt = new Date();
   const start = performance.now();
   try {

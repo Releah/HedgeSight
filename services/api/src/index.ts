@@ -59,6 +59,7 @@ app.get("/api/monitoring", async (_request, response) => {
     d.os_name AS "osName",d.os_version AS "osVersion",d.device_type AS "deviceType",d.vendor,d.model,
     d.profile_source AS "profileSource",d.profiled_at AS "profiledAt",p.id AS "pingCheckId",
     p.interval_seconds AS "intervalSeconds",p.last_status AS "pingStatus",p.last_run_at AS "lastRunAt",
+    COALESCE(p.config->>'mode','icmp') AS "reachabilityMode",COALESCE((p.config->>'port')::integer,22) AS "tcpPort",
     latest.latency_ms AS "latencyMs",COALESCE((latest.metrics->>'packetLossPercent')::double precision,0) AS "packetLossPercent",
     COALESCE(history.points,'[]'::json) AS history,COALESCE(groups.items,'[]'::json) AS groups,d.enabled
     FROM devices d
@@ -96,18 +97,19 @@ const deviceSchema = z.object({
   description: z.string().max(1000).default(""),
   enabled: z.boolean().default(true),
   pingIntervalSeconds: z.number().int().min(10).max(86400).default(60),
+  reachabilityMode: z.enum(["icmp","tcp"]).default("icmp"), tcpPort: z.number().int().min(1).max(65535).default(22),
 });
 
 app.post("/api/devices", async (request, response) => {
   const parsed = deviceSchema.safeParse(request.body);
   if (!parsed.success) return response.status(400).json({ error: "Invalid device", issues: parsed.error.issues });
-  const { name, address, description, enabled, pingIntervalSeconds } = parsed.data;
+  const { name, address, description, enabled, pingIntervalSeconds, reachabilityMode, tcpPort } = parsed.data;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const result = await client.query("INSERT INTO devices(name,address,description,enabled) VALUES ($1,$2,$3,$4) RETURNING *", [name,address,description,enabled]);
     await client.query(`INSERT INTO checks(device_id,name,kind,interval_seconds,timeout_ms,config)
-      VALUES($1,'Ping availability','ping',$2,5000,'{}'::jsonb)`, [result.rows[0].id,pingIntervalSeconds]);
+      VALUES($1,'Reachability','ping',$2,5000,$3)`, [result.rows[0].id,pingIntervalSeconds,{mode:reachabilityMode,port:tcpPort}]);
     await client.query("COMMIT"); return response.status(201).json(result.rows[0]);
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
@@ -118,6 +120,7 @@ const deviceUpdateSchema = z.object({
   osName: z.string().trim().max(120).nullable().optional(), osVersion: z.string().trim().max(120).nullable().optional(),
   deviceType: z.string().trim().max(120).nullable().optional(), vendor: z.string().trim().max(120).nullable().optional(),
   model: z.string().trim().max(120).nullable().optional(), groupIds: z.array(z.string().uuid()).max(100).default([]),
+  reachabilityMode: z.enum(["icmp","tcp"]), tcpPort: z.number().int().min(1).max(65535),
 });
 
 app.put("/api/devices/:deviceId", async (request, response) => {
@@ -131,7 +134,7 @@ app.put("/api/devices/:deviceId", async (request, response) => {
       profiled_at=CASE WHEN $6::text IS NOT NULL OR $8::text IS NOT NULL THEN now() ELSE profiled_at END,updated_at=now() WHERE id=$1 RETURNING *`,
       [request.params.deviceId,v.name,v.address,v.description,v.enabled,v.osName || null,v.osVersion || null,v.deviceType || null,v.vendor || null,v.model || null]);
     if (!device.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Device not found" }); }
-    await client.query("UPDATE checks SET interval_seconds=$2,next_run_at=LEAST(next_run_at,now()),updated_at=now() WHERE device_id=$1 AND kind='ping'", [request.params.deviceId,v.pingIntervalSeconds]);
+    await client.query("UPDATE checks SET interval_seconds=$2,config=$3,next_run_at=LEAST(next_run_at,now()),updated_at=now() WHERE device_id=$1 AND kind='ping'", [request.params.deviceId,v.pingIntervalSeconds,{mode:v.reachabilityMode,port:v.tcpPort}]);
     await client.query("DELETE FROM device_group_memberships WHERE device_id=$1", [request.params.deviceId]);
     if (v.groupIds.length) await client.query("INSERT INTO device_group_memberships(device_id,group_id) SELECT $1,unnest($2::uuid[])", [request.params.deviceId,v.groupIds]);
     await client.query("COMMIT"); return response.json(device.rows[0]);

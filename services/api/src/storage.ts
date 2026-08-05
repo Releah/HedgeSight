@@ -108,7 +108,8 @@ storageRouter.get("/devices/:deviceId/interfaces", async (request, response) => 
   const result = await pool.query(`SELECT i.id,i.name,i.alias,i.description,i.snmp_index AS "snmpIndex",i.speed_bps AS "speedBps",
     i.admin_status AS "adminStatus",i.operational_status AS "operationalStatus",i.present,i.last_seen_at AS "lastSeenAt",
     s.in_bps AS "inBps",s.out_bps AS "outBps",s.utilization_in_percent AS "utilizationInPercent",
-    s.utilization_out_percent AS "utilizationOutPercent",s.in_errors AS "inErrors",s.out_errors AS "outErrors"
+    s.utilization_out_percent AS "utilizationOutPercent",s.in_errors AS "inErrors",s.out_errors AS "outErrors",
+    s.in_discards AS "inDiscards",s.out_discards AS "outDiscards"
     FROM interfaces i LEFT JOIN LATERAL (SELECT * FROM interface_samples WHERE interface_id=i.id ORDER BY collected_at DESC LIMIT 1) s ON true
     WHERE i.device_id=$1 ORDER BY i.name`, [request.params.deviceId]); response.json(result.rows);
 });

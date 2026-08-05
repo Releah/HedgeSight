@@ -10,6 +10,10 @@ Every device receives a Ping availability check when it is created. The interval
 
 Ping results record availability, response time, and packet loss. The **Monitoring** page shows current state, latest latency, polling interval, last check time, and the latest 30 response-time samples. Device profile fields are included now and display placeholders until SSH profiling is implemented.
 
+Reachability can use either ICMP echo or a TCP connection to a configurable port (port 22 by default). Both methods use the same scheduling, latency history, state transitions, and incident handling.
+
+Monitoring rows expand to show the latest interface traffic, utilization, errors, and discards, refreshing every 10 seconds. Until SNMP discovery has populated interface telemetry, the expanded view explains that no interface data is available. Device configuration and profile management remain on the separate **Devices** page.
+
 ## Device management and groups
 
 The **Devices** and **Monitoring** pages share a management toolbar. Devices can be searched by name, address, description, OS, vendor, model, or group and filtered simultaneously by state, operating system, and custom group.
