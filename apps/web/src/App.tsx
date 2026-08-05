@@ -87,7 +87,7 @@ type MonitoringDevice = {
   maintenanceStartedAt: string | null;
   maintenanceEstimatedEndAt: string | null;
   changeStatus: "scheduled"|"active"|"overdue"|null;
-  sshCredentialId:string|null;sshCredentialName:string|null;sshPort:number|null;sshEnabled:boolean|null;sshIntervalSeconds:number|null;sshStatus:string|null;sshLastRunAt:string|null;sshProfile:Record<string,unknown>;sshProfiledAt:string|null;sshThresholds:Record<string,number>;
+  sshCredentialId:string|null;sshCredentialName:string|null;sshPort:number|null;sshEnabled:boolean|null;sshIntervalSeconds:number|null;sshStatus:string|null;sshLastRunAt:string|null;sshProfile:Record<string,unknown>;sshProfiledAt:string|null;sshThresholds:Record<string,unknown>;
   uptimeSeconds: string | null;
   downtimeSeconds: string | null;
   maintenanceDowntimeSeconds: string | null;
@@ -141,6 +141,8 @@ type StorageStatus = {
 };
 type SettingsTab = "data" | "credentials" | "accounts" | "authentication" | "system";
 type StoredCredential={id:string;name:string;username:string;deviceCount:number;createdAt:string;updatedAt:string};
+type ChartRequest={deviceId:string;title:string;kind:"metric"|"interface";key?:string;interfaceId?:string;unit:string};
+type ChartPoint={timestamp:string;value?:number;inBps?:number|null;outBps?:number|null;utilizationInPercent?:number|null;utilizationOutPercent?:number|null};
 type Account = {
   id: string;
   email: string;
@@ -312,6 +314,9 @@ function StatusBadge({ status }: { status: string }) {
     </span>
   );
 }
+function componentMonitored(device:MonitoringDevice,id:string):boolean{const selected=device.sshThresholds.monitoredComponents;return !Array.isArray(selected)||(selected as string[]).includes(id);}
+function linePoints(values:number[],maximum?:number,width=720,height=230):string{if(!values.length)return "";const range=Math.max(1,maximum??Math.max(...values,1));return values.map((value,index)=>`${values.length===1?width/2:index/(values.length-1)*width},${height-value/range*height}`).join(" ");}
+function TimeChart({points,kind,unit}:{points:ChartPoint[];kind:"metric"|"interface";unit:string}){const primary=points.map(item=>kind==="interface"?Number(item.inBps??0)/1_000_000:Number(item.value??0)),secondary=kind==="interface"?points.map(item=>Number(item.outBps??0)/1_000_000):[],all=[...primary,...secondary],maximum=Math.max(...all,0);if(!points.length)return <div className="chart-empty">No samples in this time window yet.</div>;return <><div className="chart-scale"><span>{maximum.toFixed(maximum<10?2:1)} {unit}</span><span>0 {unit}</span></div><svg className="history-chart" viewBox="0 0 720 230" preserveAspectRatio="none" aria-label="Metric history"><line x1="0" y1="0" x2="720" y2="0"/><line x1="0" y1="115" x2="720" y2="115"/><line x1="0" y1="230" x2="720" y2="230"/><polyline className="chart-primary" points={linePoints(primary,maximum)}/>{secondary.length>0&&<polyline className="chart-secondary" points={linePoints(secondary,maximum)}/>}</svg><div className="chart-axis"><span>{new Date(points[0].timestamp).toLocaleString()}</span><span>{new Date(points[points.length-1].timestamp).toLocaleString()}</span></div>{kind==="interface"&&<div className="chart-legend"><span className="in">Inbound</span><span className="out">Outbound</span></div>}</>}
 function incidentStatus(status: string) {
   return status === "pending_investigation"
     ? "Pending investigation"
@@ -1146,6 +1151,10 @@ export function PrivateApp({
   const [taskDialog,setTaskDialog]=useState(false);
   const [incidentTaskDialog,setIncidentTaskDialog]=useState(false);
   const [taskError,setTaskError]=useState("");
+  const [chart,setChart]=useState<ChartRequest|null>(null);
+  const [chartHours,setChartHours]=useState(24);
+  const [chartData,setChartData]=useState<ChartPoint[]>([]);
+  const [chartLoading,setChartLoading]=useState(false);
 
   async function refresh() {
     try {
@@ -1245,6 +1254,7 @@ export function PrivateApp({
     const timer = window.setInterval(() => void load(), 10_000);
     return () => window.clearInterval(timer);
   }, [expandedDevice]);
+  useEffect(()=>{if(!chart)return;let active=true;setChartLoading(true);const url=chart.kind==="interface"?`/api/interfaces/${chart.interfaceId}/history?resolution=raw&hours=${chartHours}`:`/api/devices/${chart.deviceId}/metric-history?key=${encodeURIComponent(chart.key??"")}&hours=${chartHours}`;fetch(url).then(response=>response.ok?response.json():[]).then(data=>{if(active)setChartData(data)}).finally(()=>{if(active)setChartLoading(false)});return()=>{active=false}},[chart,chartHours]);
   function navigate(next: View) {
     setView(next);
     window.location.hash = next;
@@ -1472,7 +1482,7 @@ export function PrivateApp({
         vendor: data.get("vendor") || null,
         model: data.get("model") || null,
         groupIds: data.getAll("groupIds"),
-        sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),cpuThresholdPercent:Number(data.get("cpuThresholdPercent")||90),memoryThresholdPercent:Number(data.get("memoryThresholdPercent")||90),diskThresholdPercent:Number(data.get("diskThresholdPercent")||90),interfaceThresholdPercent:Number(data.get("interfaceThresholdPercent")||90),interfaceErrorThreshold:Number(data.get("interfaceErrorThreshold")||1),
+        sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),cpuThresholdPercent:Number(data.get("cpuThresholdPercent")||90),memoryThresholdPercent:Number(data.get("memoryThresholdPercent")||90),diskThresholdPercent:Number(data.get("diskThresholdPercent")||90),interfaceThresholdPercent:Number(data.get("interfaceThresholdPercent")||90),interfaceErrorThreshold:Number(data.get("interfaceErrorThreshold")||1),monitoredComponents:data.getAll("monitoredComponents"),
       }),
     });
     if (response.ok) {
@@ -2004,7 +2014,12 @@ export function PrivateApp({
                                   <div><small>AVAILABILITY</small><strong>{device.uptimePercent===null?"—":`${Number(device.uptimePercent).toFixed(3)}%`}</strong></div>
                                   <span>Unknown and maintenance-window time are excluded from availability. Maintenance outages are tracked separately.</span>
                                 </section>
-                                {device.sshProfiledAt&&<section className="ssh-metric-strip"><div><small>RESOURCE CHECK</small><strong className={device.sshStatus==="degraded"?"threshold-breach":""}>{device.sshStatus??"unknown"}</strong><span>{relativeTime(device.sshProfiledAt)}</span></div><div><small>CPU UTILISATION</small><strong className={Number(device.sshProfile.cpuUsedPercent??0)>=Number(device.sshThresholds.cpuThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.cpuUsedPercent??0).toFixed(1)}%</strong><span>{String(device.sshProfile.cpuCount??"—")} cores</span></div><div><small>RAM UTILISATION</small><strong className={Number(device.sshProfile.memoryUsedPercent??0)>=Number(device.sshThresholds.memoryThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.memoryUsedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(device.sshProfile.memoryBytes??0))}</span></div><div><small>SYSTEM UPTIME</small><strong>{availabilityDuration(String(device.sshProfile.uptimeSeconds??0))}</strong></div><div><small>HIGHEST DISK USE</small><strong className={Math.max(0,...(((device.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map(item=>Number(item.usedPercent??0))))>=Number(device.sshThresholds.diskThresholdPercent??90)?"threshold-breach":""}>{Math.max(0,...(((device.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map(item=>Number(item.usedPercent??0))))}%</strong></div></section>}
+                                {device.sshProfiledAt&&<section className="ssh-metric-strip">
+                                  <div><small>RESOURCE CHECK</small><strong className={device.sshStatus==="degraded"?"threshold-breach":""}>{device.sshStatus??"unknown"}</strong><span>{relativeTime(device.sshProfiledAt)}</span></div>
+                                  {componentMonitored(device,"cpu")&&<button onClick={()=>setChart({deviceId:device.id,title:`${device.name} · CPU utilisation`,kind:"metric",key:"cpuUsedPercent",unit:"%"})}><small>CPU UTILISATION</small><strong className={Number(device.sshProfile.cpuUsedPercent??0)>=Number(device.sshThresholds.cpuThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.cpuUsedPercent??0).toFixed(1)}%</strong><span>{String(device.sshProfile.cpuCount??"—")} cores · view history</span></button>}
+                                  {componentMonitored(device,"memory")&&<button onClick={()=>setChart({deviceId:device.id,title:`${device.name} · RAM utilisation`,kind:"metric",key:"memoryUsedPercent",unit:"%"})}><small>RAM UTILISATION</small><strong className={Number(device.sshProfile.memoryUsedPercent??0)>=Number(device.sshThresholds.memoryThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.memoryUsedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(device.sshProfile.memoryBytes??0))} · view history</span></button>}
+                                  {((device.sshProfile.filesystems as Array<Record<string,unknown>>)||[]).filter(item=>componentMonitored(device,`disk:${String(item.mount)}`)).map(item=><button key={String(item.mount)} onClick={()=>setChart({deviceId:device.id,title:`${device.name} · ${String(item.mount)} disk usage`,kind:"metric",key:`diskUsedPercent:${String(item.mount)}`,unit:"%"})}><small>DISK · {String(item.mount)}</small><strong className={Number(item.usedPercent??0)>=Number(device.sshThresholds.diskThresholdPercent??90)?"threshold-breach":""}>{Number(item.usedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(item.usedBytes??0))} used · view history</span></button>)}
+                                </section>}
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
                                     Loading interfaces…
@@ -2019,9 +2034,10 @@ export function PrivateApp({
                                   </div>
                                 ) : (
                                   <div className="interface-grid">
-                                    {interfaceStats[device.id].map((item) => (
+                                    {interfaceStats[device.id].filter(item=>componentMonitored(device,`interface:${item.name}`)).map((item) => (
                                       <article
                                         key={item.id}
+                                        role="button" tabIndex={0} onClick={()=>setChart({deviceId:device.id,title:`${device.name} · ${item.name} traffic`,kind:"interface",interfaceId:item.id,unit:"Mbps"})} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")setChart({deviceId:device.id,title:`${device.name} · ${item.name} traffic`,kind:"interface",interfaceId:item.id,unit:"Mbps"})}}
                                         className={
                                           Math.max(item.utilizationInPercent??0,item.utilizationOutPercent??0)>=Number(device.sshThresholds.interfaceThresholdPercent??90)||(Number(device.sshThresholds.interfaceErrorThreshold??1)>0&&Number(item.errorDelta??0)+Number(item.discardDelta??0) >=
                                           Number(device.sshThresholds.interfaceErrorThreshold??1)
@@ -3245,6 +3261,7 @@ export function PrivateApp({
         </div>
       )}
       {deviceDetail&&<div className="modal-backdrop" onMouseDown={()=>setDeviceDetail(null)}><section className="modal wide-modal device-profile-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setDeviceDetail(null)}><X/></button><p className="eyebrow">DEVICE PROFILE · {deviceDetail.sshProfiledAt?`COLLECTED ${relativeTime(deviceDetail.sshProfiledAt)}`:"NOT YET COLLECTED"}</p><h2>{String(deviceDetail.sshProfile.hostname??deviceDetail.name)}</h2><p>{String(deviceDetail.sshProfile.osName??deviceDetail.osName??"Operating system unknown")} {String(deviceDetail.sshProfile.osVersion??deviceDetail.osVersion??"")}</p><div className="profile-fact-grid"><article><small>CPU</small><strong>{String(deviceDetail.sshProfile.cpuCount??"—")} logical cores</strong></article><article><small>MEMORY</small><strong>{formatBytes(String(deviceDetail.sshProfile.memoryBytes??0))}</strong></article><article><small>UPTIME</small><strong>{availabilityDuration(String(deviceDetail.sshProfile.uptimeSeconds??0))}</strong></article><article><small>KERNEL</small><strong>{String(deviceDetail.sshProfile.kernel??"—")}</strong></article></div><h3>Filesystems</h3><div className="profile-table">{((deviceDetail.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map((disk,index)=><article key={index}><div><strong>{String(disk.mount)}</strong><small>{String(disk.filesystem)}</small></div><span>{formatBytes(String(disk.usedBytes))} / {formatBytes(String(disk.totalBytes))}</span><b>{String(disk.usedPercent)}%</b></article>)}</div><h3>Network adapters</h3><div className="profile-table">{((deviceDetail.sshProfile.interfaces as Array<Record<string,unknown>>) || []).map((adapter,index)=><article key={index}><div><strong>{String(adapter.name)}</strong><small>{String(adapter.macAddress??"")}</small></div><span>MTU {String(adapter.mtu??"—")}</span><b>{String(adapter.state??"unknown")}</b></article>)}</div><div className="secret-note"><LockKeyhole size={16}/><span>SSH host key: {deviceDetail.sshCredentialName?"trusted and pinned after first successful profile":"SSH profiling is not configured"}</span></div></section></div>}
+      {chart&&<div className="modal-backdrop" onMouseDown={()=>setChart(null)}><section className="modal wide-modal chart-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setChart(null)}><X/></button><div className="chart-header"><div><p className="eyebrow">METRIC HISTORY</p><h2>{chart.title}</h2></div><label>Time window<select value={chartHours} onChange={event=>setChartHours(Number(event.target.value))}><option value="1">Last hour</option><option value="6">Last 6 hours</option><option value="24">Last 24 hours</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></label></div>{chartLoading?<div className="chart-empty">Loading samples…</div>:<TimeChart points={chartData} kind={chart.kind} unit={chart.unit}/>}</section></div>}
       {editing && (
         <div className="modal-backdrop" onMouseDown={() => setEditing(null)}>
           <section
@@ -3320,7 +3337,20 @@ export function PrivateApp({
                   placeholder="Linux"
                 />
               </label>
-              <fieldset className="full-field ssh-config advanced-monitoring"><legend>Advanced Linux monitoring</legend><label className="toggle-label"><input type="checkbox" name="sshEnabled" defaultChecked={Boolean(editing.sshEnabled)}/> Collect active CPU, memory, disk and interface metrics over SSH</label><label>Stored credential<select name="sshCredentialId" defaultValue={editing.sshCredentialId??""}><option value="">Select credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label><label>SSH port<input name="sshPort" type="number" min="1" max="65535" defaultValue={editing.sshPort??22}/></label><label>Snapshot interval<select name="sshIntervalSeconds" defaultValue={editing.sshIntervalSeconds??900}><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label><div className="component-inventory"><strong>Discovered components</strong><span>CPU · {String(editing.sshProfile.cpuCount??"—")} cores</span><span>RAM · {formatBytes(String(editing.sshProfile.memoryBytes??0))}</span>{((editing.sshProfile.filesystems as Array<Record<string,unknown>>)||[]).map(item=><span key={`disk-${String(item.mount)}`}>Disk · {String(item.mount)}</span>)}{((editing.sshProfile.interfaces as Array<Record<string,unknown>>)||[]).map(item=><span key={`nic-${String(item.name)}`}>Interface · {String(item.name)}</span>)}</div><div className="threshold-grid"><strong>Alert thresholds</strong><label>CPU utilisation %<input name="cpuThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.cpuThresholdPercent??90}/></label><label>Memory utilisation %<input name="memoryThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.memoryThresholdPercent??90}/></label><label>Disk used %<input name="diskThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.diskThresholdPercent??90}/></label><label>Interface utilisation %<input name="interfaceThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.interfaceThresholdPercent??90}/></label><label>Interface errors<input name="interfaceErrorThreshold" type="number" min="0" defaultValue={editing.sshThresholds.interfaceErrorThreshold??1}/></label></div><small>CPU, RAM and disk threshold breaches raise a degraded resource incident. Interface thresholds are highlighted in Monitoring.</small></fieldset>
+              <fieldset className="full-field ssh-config advanced-monitoring">
+                <legend>Advanced Linux monitoring</legend>
+                <label className="toggle-label"><input type="checkbox" name="sshEnabled" defaultChecked={Boolean(editing.sshEnabled)}/> Collect selected component metrics over SSH</label>
+                <label>Stored credential<select name="sshCredentialId" defaultValue={editing.sshCredentialId??""}><option value="">Select credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label>
+                <label>SSH port<input name="sshPort" type="number" min="1" max="65535" defaultValue={editing.sshPort??22}/></label>
+                <label>Snapshot interval<select name="sshIntervalSeconds" defaultValue={editing.sshIntervalSeconds??900}><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label>
+                <div className="component-inventory"><strong>Discovered components <small>Click to include or exclude</small></strong>
+                  {[{id:"cpu",label:`CPU · ${String(editing.sshProfile.cpuCount??"—")} cores`},{id:"memory",label:`RAM · ${formatBytes(String(editing.sshProfile.memoryBytes??0))}`}].map(component=><label key={component.id} className="component-toggle"><input type="checkbox" name="monitoredComponents" value={component.id} defaultChecked={!Array.isArray(editing.sshThresholds.monitoredComponents)||(editing.sshThresholds.monitoredComponents as string[]).includes(component.id)}/><span>{component.label}</span></label>)}
+                  {((editing.sshProfile.filesystems as Array<Record<string,unknown>>)||[]).map(item=>{const id=`disk:${String(item.mount)}`;return <label key={id} className="component-toggle"><input type="checkbox" name="monitoredComponents" value={id} defaultChecked={!Array.isArray(editing.sshThresholds.monitoredComponents)||(editing.sshThresholds.monitoredComponents as string[]).includes(id)}/><span>Disk · {String(item.mount)}</span></label>})}
+                  {((editing.sshProfile.interfaces as Array<Record<string,unknown>>)||[]).map(item=>{const id=`interface:${String(item.name)}`;return <label key={id} className="component-toggle"><input type="checkbox" name="monitoredComponents" value={id} defaultChecked={!Array.isArray(editing.sshThresholds.monitoredComponents)||(editing.sshThresholds.monitoredComponents as string[]).includes(id)}/><span>Interface · {String(item.name)}</span></label>})}
+                </div>
+                <div className="threshold-grid"><strong>Alert thresholds</strong><label>CPU utilisation %<input name="cpuThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.cpuThresholdPercent??90)}/></label><label>Memory utilisation %<input name="memoryThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.memoryThresholdPercent??90)}/></label><label>Disk used %<input name="diskThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.diskThresholdPercent??90)}/></label><label>Interface utilisation %<input name="interfaceThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.interfaceThresholdPercent??90)}/></label><label>Interface errors<input name="interfaceErrorThreshold" type="number" min="0" defaultValue={Number(editing.sshThresholds.interfaceErrorThreshold??1)}/></label></div>
+                <small>Unselected components remain discoverable but no longer store samples or trigger threshold alerts.</small>
+              </fieldset>
               <label>
                 OS version
                 <input

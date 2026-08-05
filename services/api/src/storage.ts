@@ -127,6 +127,12 @@ storageRouter.get("/interfaces/:interfaceId/history", async (request, response) 
   response.json(result.rows);
 });
 
+storageRouter.get("/devices/:deviceId/metric-history",async(request,response)=>{
+  const key=z.string().min(1).max(500).parse(request.query.key),hours=z.coerce.number().int().min(1).max(8760).catch(24).parse(request.query.hours);
+  const result=await pool.query(`SELECT collected_at AS timestamp,value FROM metric_samples WHERE device_id=$1 AND metric_key=$2 AND collected_at>now()-make_interval(hours=>$3) ORDER BY collected_at`,[request.params.deviceId,key,hours]);
+  response.json(result.rows);
+});
+
 const snapshotSchema = z.object({ workerName: z.string(), deviceId: databaseUuid, configType: z.string().min(1).max(64).default("running"), content: z.string().min(1).max(10_000_000), metadata: z.record(z.string(), z.unknown()).default({}) });
 storageRouter.post("/workers/configuration-snapshots", async (request, response) => {
   if (!validToken(request)) return response.status(401).json({ error: "Invalid worker token" });

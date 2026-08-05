@@ -28,6 +28,8 @@ SSH profiling uses a new short-lived connection for each run and executes a fixe
 
 The device editor's **Advanced Linux monitoring** section lists discovered CPUs, memory, mounted filesystems, and network adapters. Per-device thresholds cover CPU utilisation, memory utilisation, disk fullness, interface utilisation, and interface error/discard deltas. Each SSH snapshot records CPU and memory use, filesystem percentages, and cumulative Linux interface counters. Consecutive counter samples are converted into inbound/outbound bit rates and link utilisation by the time-series store. Resource threshold breaches mark the Linux resource check degraded and enter the normal incident workflow; breached interface metrics are highlighted in the expanded Monitoring view.
 
+Every discovered component is individually selectable. Unselected components remain in inventory for later re-enablement but stop contributing new samples and alerts. Selected CPU, RAM, disk and interface cards in Monitoring are interactive: clicking a card opens its historical graph with 1-hour, 6-hour, 24-hour, 7-day and 30-day windows. Interface graphs plot inbound and outbound throughput on a shared scale.
+
 ## Incident workflow
 
 A failed check raises an **Open** incident. An operator can claim a currently down incident, moving it to **Under investigation** and displaying their name on the Overview and incident pages. Successful polling records the recovery timestamp and moves the incident to **Pending investigation**; recovery does not automatically close it.
