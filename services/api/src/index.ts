@@ -31,17 +31,25 @@ app.get("/api/version", (_request, response) => {
 });
 
 const credentialsSchema = z.object({ email: z.string().trim().email().max(254).transform(value => value.toLowerCase()), password: z.string().min(12).max(256) });
-const oidcEnabled = () => Boolean(process.env.OIDC_ISSUER_URL && process.env.OIDC_CLIENT_ID && process.env.OIDC_REDIRECT_URI);
-let oidcConfiguration: Promise<oidc.Configuration> | null = null;
-function getOidcConfiguration() {
-  if (!oidcEnabled()) throw new Error("OIDC is not configured");
-  oidcConfiguration ??= oidc.discovery(new URL(process.env.OIDC_ISSUER_URL!), process.env.OIDC_CLIENT_ID!, process.env.OIDC_CLIENT_SECRET);
-  return oidcConfiguration;
+type OidcRuntimeSettings = { enabled:boolean;issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
+async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
+  const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
+  const result=await pool.query(`SELECT enabled,issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
+    CASE WHEN client_secret_encrypted IS NULL THEN NULL ELSE pgp_sym_decrypt(client_secret_encrypted,$1) END AS "clientSecret" FROM oidc_settings WHERE singleton=true`,[key]);
+  if(result.rowCount)return {...result.rows[0],source:"database"};
+  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
+}
+let oidcConfiguration: { key:string; value:Promise<oidc.Configuration> } | null = null;
+function getOidcConfiguration(settings:OidcRuntimeSettings) {
+  if(!settings.enabled||!settings.issuerUrl||!settings.clientId||!settings.redirectUri)throw new Error("OIDC is not configured");
+  const key=`${settings.issuerUrl}|${settings.clientId}|${settings.clientSecret??""}`;
+  if(oidcConfiguration?.key!==key)oidcConfiguration={key,value:oidc.discovery(new URL(settings.issuerUrl),settings.clientId,settings.clientSecret??undefined)};
+  return oidcConfiguration.value;
 }
 
 app.get("/api/auth/status", async (_request, response) => {
-  const result = await pool.query("SELECT EXISTS(SELECT 1 FROM users) AS configured");
-  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcEnabled() });
+  const [result,oidcSettings] = await Promise.all([pool.query("SELECT EXISTS(SELECT 1 FROM users) AS configured"),loadOidcSettings()]);
+  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcSettings.enabled });
 });
 
 app.get("/api/auth/me", async (request, response) => {
@@ -79,24 +87,26 @@ app.post("/api/auth/login", async (request, response) => {
 app.post("/api/auth/logout", async (request, response) => { await destroySession(request, response); return response.status(204).end(); });
 
 app.get("/api/auth/oidc/start", async (request, response) => {
-  if (!oidcEnabled()) return response.status(404).json({ error: "OIDC is not configured" });
+  const settings=await loadOidcSettings();
+  if (!settings.enabled||!settings.redirectUri) return response.status(404).json({ error: "OIDC is not configured" });
   const verifier = oidc.randomPKCECodeVerifier();
   const state = oidc.randomState();
   await pool.query("DELETE FROM oidc_flows WHERE expires_at<=now()");
   await pool.query("INSERT INTO oidc_flows(state_hash,code_verifier,expires_at) VALUES($1,$2,now()+interval '10 minutes')", [hashToken(state), verifier]);
-  const url = oidc.buildAuthorizationUrl(await getOidcConfiguration(), { redirect_uri: process.env.OIDC_REDIRECT_URI!, scope: "openid email profile", state, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: "S256" });
+  const url = oidc.buildAuthorizationUrl(await getOidcConfiguration(settings), { redirect_uri: settings.redirectUri, scope: "openid email profile", state, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: "S256" });
   return response.redirect(url.href);
 });
 
 app.get("/api/auth/oidc/callback", async (request, response) => {
-  if (!oidcEnabled() || typeof request.query.state !== "string") return response.redirect("/login?error=oidc");
+  const settings=await loadOidcSettings();
+  if (!settings.enabled||!settings.redirectUri||!settings.issuerUrl || typeof request.query.state !== "string") return response.redirect("/login?error=oidc");
   const flow = await pool.query("DELETE FROM oidc_flows WHERE state_hash=$1 AND expires_at>now() RETURNING code_verifier", [hashToken(request.query.state)]);
   if (!flow.rowCount) return response.redirect("/login?error=oidc");
-  const callback = new URL(process.env.OIDC_REDIRECT_URI!); callback.search = new URL(request.originalUrl, "http://localhost").search;
-  const tokens = await oidc.authorizationCodeGrant(await getOidcConfiguration(), callback, { pkceCodeVerifier: flow.rows[0].code_verifier, expectedState: request.query.state });
+  const callback = new URL(settings.redirectUri); callback.search = new URL(request.originalUrl, "http://localhost").search;
+  const tokens = await oidc.authorizationCodeGrant(await getOidcConfiguration(settings), callback, { pkceCodeVerifier: flow.rows[0].code_verifier, expectedState: request.query.state });
   const claims = tokens.claims();
   if (!claims?.sub || typeof claims.email !== "string") return response.redirect("/login?error=email");
-  const issuer = process.env.OIDC_ISSUER_URL!; const email = claims.email.toLowerCase(); const displayName = typeof claims.name === "string" ? claims.name : email;
+  const issuer = settings.issuerUrl; const email = claims.email.toLowerCase(); const displayName = typeof claims.name === "string" ? claims.name : email;
   const existing = await pool.query("SELECT id,oidc_issuer,oidc_subject FROM users WHERE email=$1", [email]);
   if (existing.rowCount && (existing.rows[0].oidc_issuer !== issuer || existing.rows[0].oidc_subject !== claims.sub)) return response.redirect("/login?error=link");
   const user = existing.rowCount
@@ -128,8 +138,29 @@ app.get("/api/settings/accounts", async (request, response) => {
   if (!requireAdmin(request, response)) return;
   const result = await pool.query(`SELECT id,email,display_name AS "displayName",role,enabled,
     password_hash IS NOT NULL AS "hasLocalPassword",oidc_subject IS NOT NULL AS "hasOidcIdentity",
-    created_at AS "createdAt",last_login_at AS "lastLoginAt" FROM users ORDER BY display_name,email`);
+    created_at AS "createdAt",last_login_at AS "lastLoginAt",
+    id=(SELECT id FROM users ORDER BY created_at,id LIMIT 1) AS "isProtected",id=$1 AS "isCurrent"
+    FROM users ORDER BY display_name,email`,[response.locals.user.id]);
   response.json(result.rows);
+});
+
+const accountUpdateSchema=z.object({displayName:z.string().trim().min(1).max(120),email:z.string().trim().email().max(254).transform(value=>value.toLowerCase()),role:z.enum(["admin","operator","viewer"]),enabled:z.boolean(),password:z.union([z.string().min(12).max(256),z.literal("")]).optional()});
+app.put("/api/settings/accounts/:accountId",async(request,response)=>{
+  if(!requireAdmin(request,response))return;
+  const parsed=accountUpdateSchema.safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Use a valid email and a password of at least 12 characters"});
+  const protectedAccount=await pool.query("SELECT id=(SELECT id FROM users ORDER BY created_at,id LIMIT 1) AS protected FROM users WHERE id=$1",[request.params.accountId]);
+  if(!protectedAccount.rowCount)return response.status(404).json({error:"Account not found"});
+  if(protectedAccount.rows[0].protected)return response.status(409).json({error:"The original administrator is protected"});
+  try{const password=parsed.data.password?await passwordHash(parsed.data.password):null;const result=await pool.query(`UPDATE users SET display_name=$2,email=$3,role=$4,enabled=$5,
+    password_hash=CASE WHEN $6::text IS NULL THEN password_hash ELSE $6 END,updated_at=now() WHERE id=$1 RETURNING id`,[request.params.accountId,parsed.data.displayName,parsed.data.email,parsed.data.role,parsed.data.enabled,password]);return response.json({updated:Boolean(result.rowCount)});}catch(error){if((error as {code?:string}).code==="23505")return response.status(409).json({error:"An account with that email already exists"});throw error;}
+});
+
+app.delete("/api/settings/accounts/:accountId",async(request,response)=>{
+  if(!requireAdmin(request,response))return;
+  if(request.params.accountId===response.locals.user.id)return response.status(409).json({error:"You cannot delete your current account"});
+  const result=await pool.query(`DELETE FROM users WHERE id=$1 AND id<>(SELECT id FROM users ORDER BY created_at,id LIMIT 1) RETURNING id`,[request.params.accountId]);
+  if(!result.rowCount)return response.status(409).json({error:"The original administrator is protected or the account does not exist"});
+  return response.status(204).end();
 });
 
 app.post("/api/settings/accounts", async (request, response) => {
@@ -146,13 +177,29 @@ app.post("/api/settings/accounts", async (request, response) => {
   }
 });
 
-app.get("/api/settings/authentication", (request, response) => {
+app.get("/api/settings/authentication", async (request, response) => {
   if (!requireAdmin(request, response)) return;
+  const settings=await loadOidcSettings();
   response.json({
     localAccountsEnabled: true,
-    oidc: { enabled: oidcEnabled(), issuerUrl: process.env.OIDC_ISSUER_URL || null, clientIdConfigured: Boolean(process.env.OIDC_CLIENT_ID), clientSecretConfigured: Boolean(process.env.OIDC_CLIENT_SECRET), redirectUri: process.env.OIDC_REDIRECT_URI || null },
+    oidc: { enabled: settings.enabled, issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
     sessionDays: Math.max(1, Number(process.env.SESSION_DAYS ?? 7)), cookieSecure: process.env.COOKIE_SECURE === "true", trustProxy: process.env.TRUST_PROXY === "true",
   });
+});
+
+app.put("/api/settings/authentication/oidc",async(request,response)=>{
+  if(!requireAdmin(request,response))return;
+  const parsed=z.object({enabled:z.boolean(),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
+  if(!parsed.success)return response.status(400).json({error:"Enter valid issuer and callback URLs"});
+  if(parsed.data.enabled&&(!parsed.data.issuerUrl||!parsed.data.clientId||!parsed.data.redirectUri))return response.status(400).json({error:"Issuer URL, client ID and callback URL are required when OIDC is enabled"});
+  const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
+  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
+    VALUES(true,$1,NULLIF($2,''),NULLIF($3,''),CASE WHEN $4='' THEN NULL ELSE pgp_sym_encrypt($4,$5) END,NULLIF($6,''),$7)
+    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
+    client_secret_encrypted=CASE WHEN $4='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
+    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
+  oidcConfiguration=null;
+  return response.json({saved:true});
 });
 
 app.get("/api/dashboard", async (_request, response) => {

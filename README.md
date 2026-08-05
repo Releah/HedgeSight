@@ -52,7 +52,9 @@ Configuration snapshots are compressed, AES-256 encrypted through PostgreSQL `pg
 
 On first launch, HedgeSight asks you to create the initial local administrator. No default web credentials are included. The privacy-safe network-health view is available without authentication at <http://localhost:8080/status> and exposes only aggregate up, down, degraded, unknown, and incident counts.
 
-Local accounts use scrypt password hashing and server-side sessions. Optional OAuth2-based login uses OpenID Connect Authorization Code flow with PKCE. Configure `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and the exact registered `OIDC_REDIRECT_URI`; for the default local deployment the callback is `http://localhost:8080/api/auth/oidc/callback`. Set `COOKIE_SECURE=true` and `TRUST_PROXY=true` when HTTPS terminates at a trusted reverse proxy.
+Local accounts use scrypt password hashing and server-side sessions. Administrators can add, edit, disable, re-password, and delete accounts in **Settings → Account management**; the original bootstrap administrator is protected from modification and deletion.
+
+Optional OAuth2-based login uses OpenID Connect Authorization Code flow with PKCE. Configure it directly in **Settings → Authentication** or use the `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` environment variables as initial defaults. Settings saved through the interface take effect immediately and the client secret is encrypted with `CONFIG_ENCRYPTION_KEY`. For the default local deployment the callback is `http://localhost:8080/api/auth/oidc/callback`. Set `COOKIE_SECURE=true` and `TRUST_PROXY=true` when HTTPS terminates at a trusted reverse proxy.
 
 The default stack contains the application, one local worker, and PostgreSQL. The application runs migrations automatically and adds a built-in health check.
 
