@@ -247,10 +247,12 @@ app.get("/api/dashboard", async (_request, response) => {
       CASE WHEN last_seen_at > now() - interval '60 seconds' THEN 'online' ELSE 'offline' END AS status
       FROM workers ORDER BY name`),
     pool.query(`SELECT i.id, d.name AS "deviceName", c.name AS "checkName", i.status,
-      i.opened_at AS "openedAt", i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",u.display_name AS "investigatorName"
+      i.opened_at AS "openedAt", i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",u.display_name AS "investigatorName",
+      (maintenance.id IS NOT NULL) AS "coveredByChange",maintenance.change_reference AS "changeReference",maintenance.manager_name AS "changeManagerName"
       FROM incidents i JOIN checks c ON c.id = i.check_id JOIN devices d ON d.id = c.device_id
       LEFT JOIN users u ON u.id=i.investigating_user_id
-      WHERE i.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM change_record_devices maintenance JOIN change_records change ON change.id=maintenance.change_record_id WHERE maintenance.device_id=i.device_id AND maintenance.ended_at IS NULL AND change.started_at<=now() AND change.estimated_end_at>now())
+      LEFT JOIN LATERAL (SELECT change.id,change.change_reference,manager.display_name AS manager_name FROM change_record_devices membership JOIN change_records change ON change.id=membership.change_record_id JOIN users manager ON manager.id=change.change_manager_user_id WHERE membership.device_id=i.device_id AND membership.ended_at IS NULL AND change.ended_at IS NULL AND change.started_at<=now() AND change.estimated_end_at>now() ORDER BY change.started_at DESC LIMIT 1) maintenance ON true
+      WHERE i.archived_at IS NULL
       ORDER BY i.opened_at DESC LIMIT 10`),
     pool.query(`SELECT r.id,r.change_reference AS "changeReference",r.public_description AS "publicDescription",u.id AS "managerId",u.display_name AS "managerName",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",
       CASE WHEN r.started_at>now() THEN 'scheduled' WHEN r.estimated_end_at<now() THEN 'overdue' ELSE 'active' END AS status,

@@ -465,6 +465,12 @@ function IncidentList({
             ? ` · ${incident.investigatorName} investigating`
             : ""}
         </p>
+        {incident.coveredByChange && (
+          <span className="incident-change-coverage">
+            <Wrench size={11} /> Covered by {incident.changeReference}
+            {incident.changeManagerName ? ` · ${incident.changeManagerName}` : ""}
+          </span>
+        )}
       </div>
       <span className={`badge ${incident.status}`}>
         <i />
@@ -2853,6 +2859,10 @@ export function PrivateApp({
                       </div>
                     </form>
                   </Panel>
+                  <Panel title="PostgreSQL database" subtitle="Remote database changes are applied after an automatic application restart." className="full-panel">
+                    <div className="database-current"><Database/><div><small>CURRENT DATABASE</small><strong>{databaseStatus?`${databaseStatus.host}:${databaseStatus.port} / ${databaseStatus.database}`:"Loading…"}</strong><span>{databaseStatus?.source==="managed-file"?"Managed through HedgeSight":"Provided by deployment environment"} · TLS {databaseStatus?.tls??"unspecified"}</span></div></div>
+                    <form className="database-switch-form" onSubmit={switchDatabase}><label>Remote PostgreSQL connection URL<input name="connectionString" type="password" required autoComplete="off" placeholder="postgresql://user:password@database.example.com:5432/hedgesight?sslmode=require"/></label><p>Export configuration before switching. HedgeSight creates its schema on the target, but does not copy users, incidents, metrics, credentials or configuration automatically.</p><button className="primary"><Database size={15}/> Test, connect and restart</button></form>
+                  </Panel>
                 </>
               )}
               {settingsTab === "credentials"&&<><div className="settings-title"><p className="eyebrow">SECRET STORE</p><h2>Device credentials</h2><p>Encrypted, write-only credentials used by polling workers for short-lived SSH sessions.</p></div>{credentialError&&<div className="error">{credentialError}</div>}<Panel title="Stored credentials" subtitle={`${credentials.length} encrypted credential${credentials.length===1?"":"s"}`} className="full-panel"><div className="table-wrap"><table><thead><tr><th>NAME</th><th>USERNAME</th><th>ASSIGNED DEVICES</th><th>UPDATED</th><th></th></tr></thead><tbody>{credentials.map(item=><tr key={item.id}><td><strong>{item.name}</strong></td><td className="mono">{item.username}</td><td>{item.deviceCount}</td><td>{relativeTime(item.updatedAt)}</td><td><button className="icon-button danger" disabled={item.deviceCount>0} onClick={()=>void deleteCredential(item)} title={item.deviceCount?"Remove assignments first":"Delete credential"}><Trash2 size={14}/></button></td></tr>)}</tbody></table></div></Panel><Panel title="Add SSH credential" subtitle="The password is encrypted immediately and cannot be read back through the interface." className="full-panel"><form className="account-form" onSubmit={createCredential}><label>Credential name<input name="name" required placeholder="Linux monitoring account"/></label><label>Username<input name="username" required autoComplete="off"/></label><label>Password<input name="password" type="password" required autoComplete="new-password"/></label><button className="primary"><LockKeyhole size={15}/>Encrypt and save</button></form></Panel></>}
@@ -3157,11 +3167,10 @@ export function PrivateApp({
                   <div className="settings-title">
                     <p className="eyebrow">PLATFORM</p>
                     <h2>System</h2>
-                    <p>Runtime status, portability and database configuration.</p>
+                    <p>Runtime status, configuration portability and platform maintenance.</p>
                   </div>
                   {configurationMessage&&<div className="info-strip"><Database/><div><strong>Configuration</strong><p>{configurationMessage}</p></div></div>}
                   <Panel title="Configuration export and import" subtitle="Move nodes, groups, checks, thresholds and retention settings between HedgeSight installations." className="full-panel"><div className="portable-config"><section><h3>Export configuration</h3><p>Downloads a portable JSON package. Metrics, incidents, users and secret credential values are intentionally excluded.</p><button className="primary" onClick={()=>void exportConfiguration()}><Archive size={15}/> Export configuration</button></section><form onSubmit={importConfiguration}><h3>Import configuration</h3><label>Configuration package<input name="configuration" type="file" accept="application/json,.json" required/></label><label>Import mode<select name="mode" defaultValue="merge"><option value="merge">Merge with existing nodes</option><option value="replace">Replace configured nodes</option></select></label><button className="secondary"><RefreshCw size={15}/> Import package</button></form></div></Panel>
-                  <Panel title="PostgreSQL database" subtitle="Remote database changes are applied after an automatic application restart." className="full-panel"><div className="database-current"><Database/><div><small>CURRENT DATABASE</small><strong>{databaseStatus?`${databaseStatus.host}:${databaseStatus.port} / ${databaseStatus.database}`:"Loading…"}</strong><span>{databaseStatus?.source==="managed-file"?"Managed through HedgeSight":"Provided by deployment environment"} · TLS {databaseStatus?.tls??"unspecified"}</span></div></div><form className="database-switch-form" onSubmit={switchDatabase}><label>Remote PostgreSQL connection URL<input name="connectionString" type="password" required autoComplete="off" placeholder="postgresql://user:password@database.example.com:5432/hedgesight?sslmode=require"/></label><p>Export configuration before switching. HedgeSight creates its schema on the target, but does not copy users, incidents, metrics, credentials or configuration automatically.</p><button className="primary"><Database size={15}/> Test, connect and restart</button></form></Panel>
                   <div className="setting-card">
                     <RefreshCw />
                     <div>

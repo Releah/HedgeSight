@@ -90,6 +90,9 @@ export interface DashboardSummary {
     resolvedAt: string | null;
     recoveredAt: string | null;
     investigatorName: string | null;
+    coveredByChange: boolean;
+    changeReference: string | null;
+    changeManagerName: string | null;
   }>;
   activeChanges: Array<{
     id: string;
