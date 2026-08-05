@@ -13,6 +13,7 @@ import {
   ArrowRight,
   Bell,
   Box,
+  CalendarClock,
   ChevronDown,
   CircleGauge,
   ClipboardList,
@@ -43,6 +44,7 @@ type View =
   | "devices"
   | "incidents"
   | "tasks"
+  | "maintenance"
   | "workers"
   | "settings";
 type DeviceGroup = {
@@ -90,6 +92,7 @@ type MonitoringDevice = {
   uptimePercent: string | null;
 };
 type ChangeManager = { id:string;displayName:string;email:string };
+type ChangeRecord={id:string;changeReference:string;publicDescription:string;managerId:string;managerName:string;startedAt:string;estimatedEndAt:string;endedAt:string|null;deviceCount:number;deviceNames:string[];status:"scheduled"|"active"|"overdue"|"completed"};
 type TaskStatus="backlog"|"in_progress"|"testing"|"completed";
 type TaskRecord={id:string;title:string;description:string;status:TaskStatus;createdAt:string;updatedAt:string;assigneeId:string|null;assigneeName:string|null;incidentCount:number;updateCount:number};
 type TaskDetail=TaskRecord&{incidents:Array<{id:string;status:string;openedAt:string;deviceName:string}>;updates:Array<{id:string;body:string;createdAt:string;authorName:string}>};
@@ -259,6 +262,7 @@ const pageCopy: Record<
     description: "Review active outages and recently resolved checks.",
   },
   tasks:{eyebrow:"FOLLOW-UP ACTIONS",title:"Tasks",description:"Track root-cause work and follow-up actions linked to incidents."},
+  maintenance:{eyebrow:"CHANGE MANAGEMENT",title:"Maintenance",description:"Review, extend and complete planned maintenance windows."},
   workers: {
     eyebrow: "POLLING",
     title: "Workers",
@@ -295,6 +299,7 @@ function dateTimeLocalValue(offsetMinutes=0):string{
 }
 
 function dateTimezoneOffset():number{return new Date().getTimezoneOffset();}
+function localDateTime(value:string):string{const date=new Date(value);return new Date(date.getTime()-date.getTimezoneOffset()*60_000).toISOString().slice(0,16);}
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`badge ${status}`}>
@@ -1125,6 +1130,8 @@ export function PrivateApp({
   const [changeDialog,setChangeDialog]=useState(false);
   const [selectedDevices,setSelectedDevices]=useState<string[]>([]);
   const [changeManagers,setChangeManagers]=useState<ChangeManager[]>([]);
+  const [changes,setChanges]=useState<ChangeRecord[]>([]);
+  const [editingChange,setEditingChange]=useState<ChangeRecord|null>(null);
   const [changeError,setChangeError]=useState("");
   const [tasks,setTasks]=useState<TaskRecord[]>([]);
   const [taskAssignees,setTaskAssignees]=useState<ChangeManager[]>([]);
@@ -1142,6 +1149,7 @@ export function PrivateApp({
         incidentsResponse,
         majorResponse,
         managersResponse,
+        changesResponse,
         tasksResponse,
         assigneesResponse,
       ] = await Promise.all([
@@ -1151,6 +1159,7 @@ export function PrivateApp({
         fetch("/api/incidents"),
         fetch("/api/major-incidents"),
         fetch("/api/change-managers"),
+        fetch("/api/changes"),
         fetch("/api/tasks"),fetch("/api/task-assignees"),
       ]);
       if (
@@ -1159,7 +1168,7 @@ export function PrivateApp({
         !groupsResponse.ok ||
         !incidentsResponse.ok ||
         !majorResponse.ok
-        || !managersResponse.ok || !tasksResponse.ok || !assigneesResponse.ok
+        || !managersResponse.ok || !changesResponse.ok || !tasksResponse.ok || !assigneesResponse.ok
       )
         throw new Error("Dashboard is unavailable");
       setSummary(await dashboardResponse.json());
@@ -1168,6 +1177,7 @@ export function PrivateApp({
       setIncidents(await incidentsResponse.json());
       setMajorIncidents(await majorResponse.json());
       setChangeManagers(await managersResponse.json());
+      setChanges(await changesResponse.json());
       setTasks(await tasksResponse.json());setTaskAssignees(await assigneesResponse.json());
       setError("");
     } catch (cause) {
@@ -1323,6 +1333,11 @@ export function PrivateApp({
     if(!confirm("Return every node in this change to normal monitoring?"))return;
     const response=await fetch(`/api/changes/${id}/return`,{method:"POST"});
     if(response.ok)await refresh();else setError((await response.json()).error??"Unable to return nodes");
+  }
+  async function saveChange(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();if(!editingChange)return;const data=new FormData(event.currentTarget);
+    const response=await fetch(`/api/changes/${editingChange.id}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({changeReference:data.get("changeReference"),publicDescription:data.get("publicDescription"),managerId:data.get("managerId"),startedAt:new Date(String(data.get("startedAt"))).toISOString(),estimatedEndAt:new Date(String(data.get("estimatedEndAt"))).toISOString()})});
+    if(response.ok){setEditingChange(null);setChangeError("");await refresh();}else setChangeError((await response.json()).error??"Unable to update change");
   }
   function toggleSelectedDevice(id:string){setSelectedDevices(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);}
   async function createMajorIncident(event: FormEvent<HTMLFormElement>) {
@@ -1753,6 +1768,7 @@ export function PrivateApp({
             <span className="nav-count alert">{openIncidents}</span>,
           )}
           {nav("tasks", <ClipboardList />, "Tasks", <span className="nav-count">{tasks.filter(item=>item.status!=="completed").length}</span>)}
+          {nav("maintenance", <CalendarClock />, "Maintenance", <span className="nav-count">{changes.filter(item=>item.status!=="completed").length}</span>)}
           {nav("workers", <Box />, "Workers")}
         </nav>
         <div className="sidebar-bottom">
@@ -1935,7 +1951,7 @@ export function PrivateApp({
                               <StatusBadge
                                 status={
                                   device.changeId
-                                    ? device.changeStatus==="scheduled"?"scheduled":"maintenance"
+                                    ? device.changeStatus==="scheduled"?"scheduled":device.changeStatus==="active"?"maintenance":device.pingStatus??"unknown"
                                     : device.enabled
                                     ? (device.pingStatus ?? "unknown")
                                     : "disabled"
@@ -2642,6 +2658,19 @@ export function PrivateApp({
         {view === "tasks" && (
           <section className="task-board">
             {(["backlog","in_progress","testing","completed"] as TaskStatus[]).map(status=><section className={`task-column ${status}`} key={status} onDragOver={event=>event.preventDefault()} onDrop={event=>{const id=event.dataTransfer.getData("text/task-id");if(id)void moveTask(id,status);}}><header><span className="task-column-dot"/><h2>{status==="in_progress"?"In progress":status[0].toUpperCase()+status.slice(1)}</h2><b>{tasks.filter(item=>item.status===status).length}</b></header><div>{tasks.filter(item=>item.status===status).map(task=><article className="task-card" key={task.id} draggable={["admin","operator"].includes(user.role)} onDragStart={event=>event.dataTransfer.setData("text/task-id",task.id)} onClick={()=>void openTask(task.id)}><div className="task-priority"><i className={task.incidentCount>=5?"critical":task.incidentCount>=3?"high":task.incidentCount>=2?"medium":"normal"}/><span>{task.incidentCount} incident{task.incidentCount===1?"":"s"}</span></div><h3>{task.title}</h3><p>{task.description||"No description added."}</p><footer><span>{task.assigneeName||"Unassigned"}</span><small>{task.updateCount} updates</small></footer></article>)}</div></section>)}
+          </section>
+        )}
+        {view === "maintenance" && (
+          <section className="maintenance-page">
+            <div className="maintenance-summary">
+              {(["active","scheduled","overdue","completed"] as const).map(status=><div key={status}><strong>{changes.filter(item=>item.status===status).length}</strong><span>{status}</span></div>)}
+            </div>
+            <Panel title="Maintenance windows" subtitle="Alert suppression is applied only between the recorded start and estimated end times." className="full-panel">
+              <div className="table-wrap"><table><thead><tr><th>CHANGE</th><th>NODES</th><th>MANAGER</th><th>WINDOW</th><th>STATUS</th><th></th></tr></thead><tbody>
+                {changes.map(change=><tr key={change.id}><td><strong>{change.changeReference}</strong><small className="account-email">{change.publicDescription}</small></td><td><strong>{change.deviceCount}</strong><small className="account-email">{change.deviceNames.join(", ")}</small></td><td>{change.managerName}</td><td className="maintenance-window"><strong>{new Date(change.startedAt).toLocaleString()}</strong><span>to</span><strong>{new Date(change.estimatedEndAt).toLocaleString()}</strong></td><td><StatusBadge status={change.status}/></td><td><div className="row-actions">{change.status!=="completed"&&<><button className="icon-button" onClick={()=>{setChangeError("");setEditingChange(change)}} title="Edit maintenance"><Pencil size={15}/></button><button className="secondary" disabled={user.role!=="admin"&&change.managerId!==user.id} onClick={()=>void returnChange(change.id)}>{change.status==="scheduled"?"Cancel":"Return"}</button></>}</div></td></tr>)}
+                {!changes.length&&<tr><td colSpan={6} className="empty-row">No maintenance windows have been recorded.</td></tr>}
+              </tbody></table></div>
+            </Panel>
           </section>
         )}
         {view === "workers" && (
@@ -3441,6 +3470,24 @@ export function PrivateApp({
               <div className="change-node-list">{selectedDevices.map(id=>{const device=monitoring.find(item=>item.id===id);return device?<span key={id}><Server size={13}/>{device.name}<small>{device.address}</small></span>:null})}</div>
               {changeError&&<div className="form-error">{changeError}</div>}
               <div className="modal-actions"><button type="button" className="secondary" onClick={()=>setChangeDialog(false)}>Cancel</button><button className="primary"><Wrench size={15}/> Start maintenance</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+      {editingChange&&(
+        <div className="modal-backdrop" onMouseDown={()=>setEditingChange(null)}>
+          <section className="modal change-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}>
+            <button className="modal-close" onClick={()=>setEditingChange(null)} aria-label="Close"><X/></button>
+            <p className="eyebrow">EDIT MAINTENANCE</p><h2>{editingChange.changeReference}</h2>
+            <p>The estimated end is the hard alert-suppression boundary. Extending an overdue window resumes suppression until the new end.</p>
+            <form onSubmit={saveChange}>
+              <label>Change record<input name="changeReference" required maxLength={200} defaultValue={editingChange.changeReference}/></label>
+              <label>Public description<textarea name="publicDescription" required maxLength={1000} rows={3} defaultValue={editingChange.publicDescription}/></label>
+              <label>Change manager<select name="managerId" required defaultValue={editingChange.managerId}>{changeManagers.map(manager=><option key={manager.id} value={manager.id}>{manager.displayName} · {manager.email}</option>)}</select></label>
+              <div className="change-window-fields"><label>Start time<input name="startedAt" type="datetime-local" required defaultValue={localDateTime(editingChange.startedAt)}/></label><label>Estimated end time<input name="estimatedEndAt" type="datetime-local" required defaultValue={localDateTime(editingChange.estimatedEndAt)}/></label></div>
+              <div className="change-node-list">{editingChange.deviceNames.map(name=><span key={name}><Server size={13}/>{name}</span>)}</div>
+              {changeError&&<div className="form-error">{changeError}</div>}
+              <div className="modal-actions"><button type="button" className="secondary" onClick={()=>setEditingChange(null)}>Cancel</button><button className="primary">Save maintenance</button></div>
             </form>
           </section>
         </div>
