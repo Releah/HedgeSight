@@ -204,6 +204,8 @@ type IncidentDetail = IncidentRecord & {
   openingMessage: string | null;
   investigatorId: string | null;
   closedByName: string | null;
+  publicMessage: string | null;
+  publicMessageUpdatedAt: string | null;
   updates: Array<{
     id: string;
     body: string;
@@ -863,6 +865,7 @@ type PublicStatus = {
     total: number;
   };
   activeIncidents: number;
+  incidents:Array<{id:string;status:string;openedAt:string;recoveredAt:string|null;publicMessage:string|null;updatedAt:string|null}>;
   changes:Array<{changeReference:string;publicDescription:string;startedAt:string;estimatedEndAt:string;status:"scheduled"|"active";deviceCount:number}>;
   lastUpdated: string;
 };
@@ -946,6 +949,10 @@ function PublicHealth() {
               <small>ACTIVE INCIDENTS</small>
             </article>
           </div>
+          <section className="public-incidents">
+            <div><p className="eyebrow">SERVICE NOTICES</p><h2>Current incidents</h2><span>Published information about active service disruption.</span></div>
+            {status?.incidents.length?status.incidents.map(incident=><article key={incident.id}><span className={`public-incident-icon ${incident.recoveredAt?"recovering":"outage"}`}><Bell size={16}/></span><div><strong>{incident.recoveredAt?"Service recovery in progress":"Service disruption"}</strong><p>{incident.publicMessage||"We are aware of an availability issue. Further information will be published when available."}</p><small>Started {new Date(incident.openedAt).toLocaleString()} · {incident.recoveredAt?"monitoring recovery":"investigating"}</small>{incident.updatedAt&&<time>Updated {relativeTime(incident.updatedAt)}</time>}</div></article>):<div className="public-change-empty"><ShieldCheck size={18}/> No active service incidents.</div>}
+          </section>
           <section className="public-changes">
             <div><p className="eyebrow">CHANGE CALENDAR</p><h2>Scheduled maintenance</h2><span>Change windows that may affect monitored availability.</span></div>
             {status?.changes.length?status.changes.map(change=><article key={`${change.changeReference}-${change.startedAt}`}><span className={`change-icon ${change.status}`}><Wrench size={16}/></span><div className="public-change-copy"><strong>{change.changeReference}</strong><p>{change.publicDescription||"Planned maintenance is underway. Further details have not been published."}</p><small>{change.deviceCount} monitored node{change.deviceCount===1?"":"s"} · {change.status}</small></div><div className="public-change-window"><time><small>STARTS</small><b>{new Date(change.startedAt).toLocaleDateString()}</b><span>{new Date(change.startedAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span></time><i/><time><small>ESTIMATED END</small><b>{new Date(change.estimatedEndAt).toLocaleDateString()}</b><span>{new Date(change.estimatedEndAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span></time></div></article>):<div className="public-change-empty"><ShieldCheck size={18}/> No maintenance is currently scheduled.</div>}
@@ -1362,6 +1369,7 @@ export function PrivateApp({
       await reloadIncident();
     } else setIncidentError((await response.json()).error);
   }
+  async function savePublicIncidentMessage(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedIncident)return;const form=event.currentTarget,data=new FormData(form);const response=await fetch(`/api/incidents/${selectedIncident.id}/public-message`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({message:data.get("message")})});if(response.ok){setIncidentError("");await openIncident(selectedIncident.id);}else setIncidentError((await response.json()).error??"Unable to publish incident message");}
   async function resolveIncident() {
     if (!selectedIncident) return;
     const response = await fetch(
@@ -2472,6 +2480,11 @@ export function PrivateApp({
                       Recovery does not close an incident. Add context, then
                       close it once monitoring is healthy.
                     </p>
+                    <form className="public-incident-form" onSubmit={savePublicIncidentMessage}>
+                      <label>PUBLIC STATUS MESSAGE<textarea name="message" rows={4} maxLength={2000} defaultValue={selectedIncident.publicMessage??""} placeholder="Explain the impact and expected resolution for status-page visitors."/></label>
+                      <small>Public. Do not include addresses, credentials, or internal investigation details.</small>
+                      <button className="secondary"><Bell size={14}/>{selectedIncident.publicMessage?"Update public message":"Publish to status page"}</button>
+                    </form>
                     {selectedIncident.status !== "resolved" &&
                       !selectedIncident.recoveredAt && (
                         <button

@@ -123,20 +123,24 @@ app.get("/api/auth/oidc/callback", async (request, response) => {
 });
 
 app.get("/api/public/status", async (_request, response) => {
-  const [counts, incidents, changes] = await Promise.all([pool.query(`SELECT CASE WHEN active.device_id IS NOT NULL THEN 'maintenance' ELSE d.status END AS status,count(*)::int AS count
+  const [counts, incidents, changes, publicIncidents] = await Promise.all([pool.query(`SELECT CASE WHEN active.device_id IS NOT NULL THEN 'maintenance' ELSE d.status END AS status,count(*)::int AS count
     FROM devices d LEFT JOIN (SELECT DISTINCT m.device_id FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now()) active ON active.device_id=d.id
     WHERE d.enabled=true GROUP BY 1`), pool.query(`SELECT count(*)::int AS count FROM incidents i WHERE status<>'resolved'
     AND NOT EXISTS(SELECT 1 FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.device_id=i.device_id AND m.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now())`),
     pool.query(`SELECT r.change_reference AS "changeReference",r.public_description AS "publicDescription",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",
       CASE WHEN r.started_at>now() THEN 'scheduled' WHEN r.estimated_end_at<=now() THEN 'overdue' ELSE 'active' END AS status,count(m.device_id)::int AS "deviceCount"
       FROM change_records r JOIN change_record_devices m ON m.change_record_id=r.id AND m.ended_at IS NULL
-      WHERE r.ended_at IS NULL GROUP BY r.id ORDER BY r.started_at LIMIT 20`)]);
+      WHERE r.ended_at IS NULL GROUP BY r.id ORDER BY r.started_at LIMIT 20`),
+    pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.public_message AS "publicMessage",i.public_message_updated_at AS "updatedAt"
+      FROM incidents i WHERE i.status<>'resolved' AND i.archived_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.device_id=i.device_id AND m.ended_at IS NULL AND r.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now())
+      ORDER BY i.opened_at DESC LIMIT 20`)]);
   const summary = { up: 0, down: 0, degraded: 0, unknown: 0, maintenance: 0 };
   for (const row of counts.rows) summary[row.status as keyof typeof summary] = row.count;
   const total = Object.values(summary).reduce((sum, count) => sum + count, 0);
   const alertingTotal=total-summary.maintenance;
   const overallStatus = summary.down ? "outage" : summary.degraded ? "degraded" : (!alertingTotal || summary.up === alertingTotal) ? "operational" : "unknown";
-  response.set("Cache-Control", "public, max-age=15").json({ overallStatus, counts: { ...summary, total }, activeIncidents: incidents.rows[0].count, changes:changes.rows, lastUpdated: new Date().toISOString() });
+  response.set("Cache-Control", "public, max-age=15").json({ overallStatus, counts: { ...summary, total }, activeIncidents: incidents.rows[0].count, incidents:publicIncidents.rows, changes:changes.rows, lastUpdated: new Date().toISOString() });
 });
 
 app.use("/api", requireUser);
@@ -283,7 +287,7 @@ app.get("/api/incidents",async(_request,response)=>{
 app.get("/api/incidents/:incidentId",async(request,response)=>{
   const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",i.archived_at AS "archivedAt",
     d.id AS "deviceId",d.name AS "deviceName",d.address,d.description AS "deviceDescription",d.status AS "deviceStatus",
-    c.name AS "checkName",c.kind AS "checkKind",c.last_status AS "checkStatus",opening.message AS "openingMessage",
+    c.name AS "checkName",c.kind AS "checkKind",c.last_status AS "checkStatus",opening.message AS "openingMessage",i.public_message AS "publicMessage",i.public_message_updated_at AS "publicMessageUpdatedAt",
     investigator.id AS "investigatorId",investigator.display_name AS "investigatorName",closer.display_name AS "closedByName"
     FROM incidents i JOIN checks c ON c.id=i.check_id JOIN devices d ON d.id=c.device_id
     LEFT JOIN probe_results opening ON opening.id=i.opening_result_id LEFT JOIN users investigator ON investigator.id=i.investigating_user_id
@@ -310,6 +314,16 @@ app.post("/api/incidents/:incidentId/updates",async(request,response)=>{
   const result=await pool.query(`INSERT INTO incident_updates(incident_id,user_id,body) VALUES($1,$2,$3)
     RETURNING id,body,created_at AS "createdAt"`,[request.params.incidentId,response.locals.user.id,parsed.data.body]);
   return response.status(201).json({...result.rows[0],authorName:response.locals.user.displayName,authorId:response.locals.user.id});
+});
+
+app.put("/api/incidents/:incidentId/public-message",async(request,response)=>{
+  if(!requireOperator(response))return;
+  const parsed=z.object({message:z.string().trim().max(2000)}).safeParse(request.body);
+  if(!parsed.success)return response.status(400).json({error:"Public incident messages must be 2,000 characters or fewer"});
+  const message=parsed.data.message||null;
+  const result=await pool.query(`UPDATE incidents SET public_message=$2,public_message_updated_at=now(),public_message_updated_by_user_id=$3 WHERE id=$1 RETURNING id`,[request.params.incidentId,message,response.locals.user.id]);
+  if(!result.rowCount)return response.status(404).json({error:"Incident not found"});
+  return response.json({saved:true,publicMessage:message});
 });
 
 app.post("/api/incidents/:incidentId/resolve",async(request,response)=>{
