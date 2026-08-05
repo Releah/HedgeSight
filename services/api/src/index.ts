@@ -117,7 +117,7 @@ app.get("/api/auth/oidc/callback", async (request, response) => {
 });
 
 app.get("/api/public/status", async (_request, response) => {
-  const [counts, incidents] = await Promise.all([pool.query("SELECT status,count(*)::int AS count FROM devices WHERE enabled=true GROUP BY status"), pool.query("SELECT count(*)::int AS count FROM incidents WHERE status='open'")]);
+  const [counts, incidents] = await Promise.all([pool.query("SELECT status,count(*)::int AS count FROM devices WHERE enabled=true GROUP BY status"), pool.query("SELECT count(*)::int AS count FROM incidents WHERE status<>'resolved'")]);
   const summary = { up: 0, down: 0, degraded: 0, unknown: 0 };
   for (const row of counts.rows) summary[row.status as keyof typeof summary] = row.count;
   const total = Object.values(summary).reduce((sum, count) => sum + count, 0);
@@ -212,13 +212,63 @@ app.get("/api/dashboard", async (_request, response) => {
       CASE WHEN last_seen_at > now() - interval '60 seconds' THEN 'online' ELSE 'offline' END AS status
       FROM workers ORDER BY name`),
     pool.query(`SELECT i.id, d.name AS "deviceName", c.name AS "checkName", i.status,
-      i.opened_at AS "openedAt", i.resolved_at AS "resolvedAt"
+      i.opened_at AS "openedAt", i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",u.display_name AS "investigatorName"
       FROM incidents i JOIN checks c ON c.id = i.check_id JOIN devices d ON d.id = c.device_id
+      LEFT JOIN users u ON u.id=i.investigating_user_id
       ORDER BY i.opened_at DESC LIMIT 10`),
   ]);
   const summary = { up: 0, down: 0, degraded: 0, unknown: 0 };
   for (const row of counts.rows) summary[row.status as keyof typeof summary] = row.count;
   response.json({ counts: summary, devices: devices.rows, workers: workers.rows, recentIncidents: incidents.rows });
+});
+
+app.get("/api/incidents",async(_request,response)=>{
+  const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",
+    d.id AS "deviceId",d.name AS "deviceName",d.address,d.status AS "deviceStatus",c.name AS "checkName",c.kind AS "checkKind",
+    u.display_name AS "investigatorName",(SELECT count(*)::int FROM incident_updates x WHERE x.incident_id=i.id) AS "updateCount"
+    FROM incidents i JOIN checks c ON c.id=i.check_id JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=i.investigating_user_id
+    ORDER BY CASE WHEN i.status='resolved' THEN 1 ELSE 0 END,i.opened_at DESC LIMIT 200`);
+  response.json(result.rows);
+});
+
+app.get("/api/incidents/:incidentId",async(request,response)=>{
+  const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",
+    d.id AS "deviceId",d.name AS "deviceName",d.address,d.description AS "deviceDescription",d.status AS "deviceStatus",
+    c.name AS "checkName",c.kind AS "checkKind",c.last_status AS "checkStatus",opening.message AS "openingMessage",
+    investigator.id AS "investigatorId",investigator.display_name AS "investigatorName",closer.display_name AS "closedByName"
+    FROM incidents i JOIN checks c ON c.id=i.check_id JOIN devices d ON d.id=c.device_id
+    LEFT JOIN probe_results opening ON opening.id=i.opening_result_id LEFT JOIN users investigator ON investigator.id=i.investigating_user_id
+    LEFT JOIN users closer ON closer.id=i.closed_by_user_id WHERE i.id=$1`,[request.params.incidentId]);
+  if(!result.rowCount)return response.status(404).json({error:"Incident not found"});
+  const updates=await pool.query(`SELECT x.id,x.body,x.created_at AS "createdAt",COALESCE(u.display_name,'Deleted user') AS "authorName",u.id AS "authorId"
+    FROM incident_updates x LEFT JOIN users u ON u.id=x.user_id WHERE x.incident_id=$1 ORDER BY x.created_at`,[request.params.incidentId]);
+  response.json({...result.rows[0],updates:updates.rows});
+});
+
+app.post("/api/incidents/:incidentId/claim",async(request,response)=>{
+  const user=response.locals.user;
+  const result=await pool.query(`UPDATE incidents i SET status='under_investigation',investigating_user_id=$2
+    FROM checks c WHERE i.id=$1 AND c.id=i.check_id AND i.status IN ('open','under_investigation') AND c.last_status='down'
+      AND (i.investigating_user_id IS NULL OR i.investigating_user_id=$2) RETURNING i.id`,[request.params.incidentId,user.id]);
+  if(!result.rowCount)return response.status(409).json({error:"Only an active incident for a currently down check can be claimed"});
+  return response.json({claimed:true,investigatorName:user.displayName});
+});
+
+app.post("/api/incidents/:incidentId/updates",async(request,response)=>{
+  const parsed=z.object({body:z.string().trim().min(1).max(4000)}).safeParse(request.body);
+  if(!parsed.success)return response.status(400).json({error:"Update must contain between 1 and 4,000 characters"});
+  const exists=await pool.query("SELECT 1 FROM incidents WHERE id=$1",[request.params.incidentId]);if(!exists.rowCount)return response.status(404).json({error:"Incident not found"});
+  const result=await pool.query(`INSERT INTO incident_updates(incident_id,user_id,body) VALUES($1,$2,$3)
+    RETURNING id,body,created_at AS "createdAt"`,[request.params.incidentId,response.locals.user.id,parsed.data.body]);
+  return response.status(201).json({...result.rows[0],authorName:response.locals.user.displayName,authorId:response.locals.user.id});
+});
+
+app.post("/api/incidents/:incidentId/resolve",async(request,response)=>{
+  const result=await pool.query(`UPDATE incidents i SET status='resolved',resolved_at=now(),closed_by_user_id=$2
+    WHERE i.id=$1 AND i.status<>'resolved' AND i.recovered_at IS NOT NULL
+      AND EXISTS(SELECT 1 FROM incident_updates x WHERE x.incident_id=i.id) RETURNING id`,[request.params.incidentId,response.locals.user.id]);
+  if(!result.rowCount)return response.status(409).json({error:"The node must be responding and the incident must have at least one update before it can be resolved"});
+  return response.json({resolved:true});
 });
 
 app.get("/api/devices", async (_request, response) => {
@@ -395,8 +445,8 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
     if (value.status === "down") {
       await client.query(`INSERT INTO incidents(check_id, opening_result_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.check_id, inserted.rows[0].id]);
     } else if (value.status === "up") {
-      await client.query(`UPDATE incidents SET status='resolved', resolved_at=now(), closing_result_id=$2
-        WHERE check_id=$1 AND status='open'`, [row.check_id, inserted.rows[0].id]);
+      await client.query(`UPDATE incidents SET status='pending_investigation',recovered_at=COALESCE(recovered_at,now()),closing_result_id=COALESCE(closing_result_id,$2)
+        WHERE check_id=$1 AND status IN ('open','pending_investigation','under_investigation')`, [row.check_id, inserted.rows[0].id]);
     }
     await client.query(`UPDATE devices d SET
       status = CASE WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND last_status='down') THEN 'down'
@@ -414,7 +464,8 @@ app.use(express.static(webRoot));
 app.get("/{*path}", (_request, response) => response.sendFile(resolve(webRoot, "index.html")));
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   console.error(error);
-  response.status(500).json({ error: "Internal server error" });
+  const status=typeof error==="object"&&error!==null&&"status" in error&&typeof error.status==="number"?error.status:500;
+  response.status(status).json({ error: status===400?"Invalid request body":"Internal server error" });
 });
 
 await migrate();

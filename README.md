@@ -14,6 +14,12 @@ Reachability can use either ICMP echo or a TCP connection to a configurable port
 
 Monitoring rows expand to show the latest interface traffic, utilization, errors, and discards, refreshing every 10 seconds. Until SNMP discovery has populated interface telemetry, the expanded view explains that no interface data is available. Device configuration and profile management remain on the separate **Devices** page.
 
+## Incident workflow
+
+A failed check raises an **Open** incident. An operator can claim a currently down incident, moving it to **Under investigation** and displaying their name on the Overview and incident pages. Successful polling records the recovery timestamp and moves the incident to **Pending investigation**; recovery does not automatically close it.
+
+Incident detail records the outage, recovery, and closure timestamps alongside attributed, timestamped operator updates. An incident can only be marked **Resolved** after monitoring has recovered and at least one update has been added. Overview incident rows link directly to the corresponding incident detail.
+
 ## Device management and groups
 
 The **Devices** and **Monitoring** pages share a management toolbar. Devices can be searched by name, address, description, OS, vendor, model, or group and filtered simultaneously by state, operating system, and custom group.

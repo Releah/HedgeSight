@@ -84,8 +84,10 @@ export interface DashboardSummary {
     id: string;
     deviceName: string;
     checkName: string;
-    status: "open" | "resolved";
+    status: "open" | "pending_investigation" | "under_investigation" | "resolved";
     openedAt: string;
     resolvedAt: string | null;
+    recoveredAt: string | null;
+    investigatorName: string | null;
   }>;
 }
