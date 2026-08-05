@@ -2135,13 +2135,18 @@ export function PrivateApp({
                       <h2>{device.name}</h2>
                       <p className="mono">{device.address}</p>
                     </div>
-                    <StatusBadge
-                      status={
-                        device.enabled
-                          ? (device.pingStatus ?? "unknown")
-                          : "disabled"
-                      }
-                    />
+                    <div className="device-card-status">
+                      {device.changeId && (
+                        <StatusBadge status={device.changeStatus === "scheduled" ? "scheduled" : "maintenance"} />
+                      )}
+                      <StatusBadge
+                        status={
+                          device.enabled
+                            ? (device.pingStatus ?? "unknown")
+                            : "disabled"
+                        }
+                      />
+                    </div>
                   </div>
                   <p className="device-description">
                     {device.description || "No description supplied."}
