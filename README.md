@@ -50,6 +50,10 @@ Configuration snapshots are compressed, AES-256 encrypted through PostgreSQL `pg
 
 3. Open <http://localhost:8080>.
 
+On first launch, HedgeSight asks you to create the initial local administrator. No default web credentials are included. The privacy-safe network-health view is available without authentication at <http://localhost:8080/status> and exposes only aggregate up, down, degraded, unknown, and incident counts.
+
+Local accounts use scrypt password hashing and server-side sessions. Optional OAuth2-based login uses OpenID Connect Authorization Code flow with PKCE. Configure `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and the exact registered `OIDC_REDIRECT_URI`; for the default local deployment the callback is `http://localhost:8080/api/auth/oidc/callback`. Set `COOKIE_SECURE=true` and `TRUST_PROXY=true` when HTTPS terminates at a trusted reverse proxy.
+
 The default stack contains the application, one local worker, and PostgreSQL. The application runs migrations automatically and adds a built-in health check.
 
 ## Use an external PostgreSQL database
@@ -130,6 +134,7 @@ Run PostgreSQL separately or start only the bundled database with `docker compos
 - Ping arguments are passed directly to the executable without shell expansion.
 - SNMP and SSH checks cannot currently be scheduled.
 - Configuration snapshots require a stable `CONFIG_ENCRYPTION_KEY`; changing it prevents older snapshots from being decrypted.
-- User authentication, granular authorization, encrypted credential storage, and individual worker identities remain required before an internet-facing production deployment.
+- Private application APIs require a local or OpenID Connect user session. Worker APIs retain their separate bearer-token boundary.
+- Role records exist for future authorization policy, but granular role enforcement, encrypted probe credential storage, and individual worker identities remain required before an internet-facing production deployment.
 
 See [docs/architecture.md](docs/architecture.md) and [docs/roadmap.md](docs/roadmap.md) for the design and staged delivery plan.

@@ -1,8 +1,9 @@
 import { resolve } from "node:path";
 import express from "express";
 import helmet from "helmet";
+import * as oidc from "openid-client";
 import { z } from "zod";
-import { hashToken, validToken } from "./auth.js";
+import { createSession, currentUser, destroySession, hashToken, passwordHash, passwordMatches, requireUser, validToken } from "./auth.js";
 import { migrate, pool } from "./db.js";
 import { startScheduler } from "./scheduler.js";
 import { startStorageMaintenance } from "./maintenance.js";
@@ -14,7 +15,7 @@ const app = express();
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "12mb" }));
-app.use("/api", storageRouter);
+if (process.env.TRUST_PROXY === "true") app.set("trust proxy", 1);
 
 app.get("/api/health", async (_request, response) => {
   try {
@@ -28,6 +29,94 @@ app.get("/api/health", async (_request, response) => {
 app.get("/api/version", (_request, response) => {
   response.json({ version, channel: process.env.UPDATE_CHANNEL ?? "stable", repository: "Releah/HedgeSight" });
 });
+
+const credentialsSchema = z.object({ email: z.string().trim().email().max(254).transform(value => value.toLowerCase()), password: z.string().min(12).max(256) });
+const oidcEnabled = () => Boolean(process.env.OIDC_ISSUER_URL && process.env.OIDC_CLIENT_ID && process.env.OIDC_REDIRECT_URI);
+let oidcConfiguration: Promise<oidc.Configuration> | null = null;
+function getOidcConfiguration() {
+  if (!oidcEnabled()) throw new Error("OIDC is not configured");
+  oidcConfiguration ??= oidc.discovery(new URL(process.env.OIDC_ISSUER_URL!), process.env.OIDC_CLIENT_ID!, process.env.OIDC_CLIENT_SECRET);
+  return oidcConfiguration;
+}
+
+app.get("/api/auth/status", async (_request, response) => {
+  const result = await pool.query("SELECT EXISTS(SELECT 1 FROM users) AS configured");
+  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcEnabled() });
+});
+
+app.get("/api/auth/me", async (request, response) => {
+  const user = await currentUser(request);
+  if (!user) return response.status(401).json({ error: "Authentication required" });
+  return response.json({ user });
+});
+
+app.post("/api/auth/setup", async (request, response) => {
+  const parsed = credentialsSchema.extend({ displayName: z.string().trim().min(1).max(120) }).safeParse(request.body);
+  if (!parsed.success) return response.status(400).json({ error: "Use a valid email and a password of at least 12 characters" });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("LOCK TABLE users IN EXCLUSIVE MODE");
+    if ((await client.query("SELECT 1 FROM users LIMIT 1")).rowCount) { await client.query("ROLLBACK"); return response.status(409).json({ error: "Initial setup is already complete" }); }
+    const result = await client.query(`INSERT INTO users(email,display_name,password_hash,role,last_login_at) VALUES($1,$2,$3,'admin',now()) RETURNING id`, [parsed.data.email, parsed.data.displayName, await passwordHash(parsed.data.password)]);
+    await client.query("COMMIT");
+    await createSession(request, response, result.rows[0].id);
+    return response.status(201).json({ created: true });
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+});
+
+app.post("/api/auth/login", async (request, response) => {
+  const parsed = credentialsSchema.safeParse(request.body);
+  if (!parsed.success) return response.status(401).json({ error: "Invalid email or password" });
+  const result = await pool.query("SELECT id,password_hash FROM users WHERE email=$1 AND enabled=true", [parsed.data.email]);
+  const valid = result.rowCount && result.rows[0].password_hash && await passwordMatches(parsed.data.password, result.rows[0].password_hash);
+  if (!valid) return response.status(401).json({ error: "Invalid email or password" });
+  await pool.query("UPDATE users SET last_login_at=now() WHERE id=$1", [result.rows[0].id]);
+  await createSession(request, response, result.rows[0].id);
+  return response.json({ authenticated: true });
+});
+
+app.post("/api/auth/logout", async (request, response) => { await destroySession(request, response); return response.status(204).end(); });
+
+app.get("/api/auth/oidc/start", async (request, response) => {
+  if (!oidcEnabled()) return response.status(404).json({ error: "OIDC is not configured" });
+  const verifier = oidc.randomPKCECodeVerifier();
+  const state = oidc.randomState();
+  await pool.query("DELETE FROM oidc_flows WHERE expires_at<=now()");
+  await pool.query("INSERT INTO oidc_flows(state_hash,code_verifier,expires_at) VALUES($1,$2,now()+interval '10 minutes')", [hashToken(state), verifier]);
+  const url = oidc.buildAuthorizationUrl(await getOidcConfiguration(), { redirect_uri: process.env.OIDC_REDIRECT_URI!, scope: "openid email profile", state, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: "S256" });
+  return response.redirect(url.href);
+});
+
+app.get("/api/auth/oidc/callback", async (request, response) => {
+  if (!oidcEnabled() || typeof request.query.state !== "string") return response.redirect("/login?error=oidc");
+  const flow = await pool.query("DELETE FROM oidc_flows WHERE state_hash=$1 AND expires_at>now() RETURNING code_verifier", [hashToken(request.query.state)]);
+  if (!flow.rowCount) return response.redirect("/login?error=oidc");
+  const callback = new URL(process.env.OIDC_REDIRECT_URI!); callback.search = new URL(request.originalUrl, "http://localhost").search;
+  const tokens = await oidc.authorizationCodeGrant(await getOidcConfiguration(), callback, { pkceCodeVerifier: flow.rows[0].code_verifier, expectedState: request.query.state });
+  const claims = tokens.claims();
+  if (!claims?.sub || typeof claims.email !== "string") return response.redirect("/login?error=email");
+  const issuer = process.env.OIDC_ISSUER_URL!; const email = claims.email.toLowerCase(); const displayName = typeof claims.name === "string" ? claims.name : email;
+  const existing = await pool.query("SELECT id,oidc_issuer,oidc_subject FROM users WHERE email=$1", [email]);
+  if (existing.rowCount && (existing.rows[0].oidc_issuer !== issuer || existing.rows[0].oidc_subject !== claims.sub)) return response.redirect("/login?error=link");
+  const user = existing.rowCount
+    ? await pool.query("UPDATE users SET display_name=$2,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id", [existing.rows[0].id, displayName])
+    : await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,last_login_at) VALUES($1,$2,$3,$4,now()) RETURNING id`, [email, displayName, issuer, claims.sub]);
+  await createSession(request, response, user.rows[0].id);
+  return response.redirect("/#overview");
+});
+
+app.get("/api/public/status", async (_request, response) => {
+  const [counts, incidents] = await Promise.all([pool.query("SELECT status,count(*)::int AS count FROM devices WHERE enabled=true GROUP BY status"), pool.query("SELECT count(*)::int AS count FROM incidents WHERE status='open'")]);
+  const summary = { up: 0, down: 0, degraded: 0, unknown: 0 };
+  for (const row of counts.rows) summary[row.status as keyof typeof summary] = row.count;
+  const total = Object.values(summary).reduce((sum, count) => sum + count, 0);
+  const overallStatus = summary.down ? "outage" : summary.degraded ? "degraded" : total && summary.up === total ? "operational" : "unknown";
+  response.set("Cache-Control", "public, max-age=15").json({ overallStatus, counts: { ...summary, total }, activeIncidents: incidents.rows[0].count, lastUpdated: new Date().toISOString() });
+});
+
+app.use("/api", requireUser);
+app.use("/api", storageRouter);
 
 app.get("/api/dashboard", async (_request, response) => {
   const [counts, devices, workers, incidents] = await Promise.all([
