@@ -118,6 +118,43 @@ app.get("/api/public/status", async (_request, response) => {
 app.use("/api", requireUser);
 app.use("/api", storageRouter);
 
+function requireAdmin(request: express.Request, response: express.Response): boolean {
+  if (response.locals.user?.role === "admin") return true;
+  response.status(403).json({ error: "Administrator access required" });
+  return false;
+}
+
+app.get("/api/settings/accounts", async (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  const result = await pool.query(`SELECT id,email,display_name AS "displayName",role,enabled,
+    password_hash IS NOT NULL AS "hasLocalPassword",oidc_subject IS NOT NULL AS "hasOidcIdentity",
+    created_at AS "createdAt",last_login_at AS "lastLoginAt" FROM users ORDER BY display_name,email`);
+  response.json(result.rows);
+});
+
+app.post("/api/settings/accounts", async (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  const parsed = credentialsSchema.extend({ displayName: z.string().trim().min(1).max(120), role: z.enum(["admin","operator","viewer"]).default("viewer") }).safeParse(request.body);
+  if (!parsed.success) return response.status(400).json({ error: "Use a valid email and a password of at least 12 characters" });
+  try {
+    const result = await pool.query(`INSERT INTO users(email,display_name,password_hash,role) VALUES($1,$2,$3,$4)
+      RETURNING id,email,display_name AS "displayName",role,enabled,created_at AS "createdAt"`, [parsed.data.email, parsed.data.displayName, await passwordHash(parsed.data.password), parsed.data.role]);
+    return response.status(201).json(result.rows[0]);
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") return response.status(409).json({ error: "An account with that email already exists" });
+    throw error;
+  }
+});
+
+app.get("/api/settings/authentication", (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  response.json({
+    localAccountsEnabled: true,
+    oidc: { enabled: oidcEnabled(), issuerUrl: process.env.OIDC_ISSUER_URL || null, clientIdConfigured: Boolean(process.env.OIDC_CLIENT_ID), clientSecretConfigured: Boolean(process.env.OIDC_CLIENT_SECRET), redirectUri: process.env.OIDC_REDIRECT_URI || null },
+    sessionDays: Math.max(1, Number(process.env.SESSION_DAYS ?? 7)), cookieSecure: process.env.COOKIE_SECURE === "true", trustProxy: process.env.TRUST_PROXY === "true",
+  });
+});
+
 app.get("/api/dashboard", async (_request, response) => {
   const [counts, devices, workers, incidents] = await Promise.all([
     pool.query("SELECT status, count(*)::int AS count FROM devices GROUP BY status"),
