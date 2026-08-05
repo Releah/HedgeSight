@@ -121,7 +121,7 @@ app.get("/api/public/status", async (_request, response) => {
     FROM devices d LEFT JOIN (SELECT DISTINCT m.device_id FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.ended_at IS NULL AND r.started_at<=now()) active ON active.device_id=d.id
     WHERE d.enabled=true GROUP BY 1`), pool.query(`SELECT count(*)::int AS count FROM incidents i WHERE status<>'resolved'
     AND NOT EXISTS(SELECT 1 FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.device_id=i.device_id AND m.ended_at IS NULL AND r.started_at<=now())`),
-    pool.query(`SELECT r.change_reference AS "changeReference",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",
+    pool.query(`SELECT r.change_reference AS "changeReference",r.public_description AS "publicDescription",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",
       CASE WHEN r.started_at<=now() THEN 'active' ELSE 'scheduled' END AS status,count(m.device_id)::int AS "deviceCount"
       FROM change_records r JOIN change_record_devices m ON m.change_record_id=r.id AND m.ended_at IS NULL
       WHERE r.ended_at IS NULL GROUP BY r.id ORDER BY r.started_at LIMIT 20`)]);
@@ -232,7 +232,7 @@ app.get("/api/dashboard", async (_request, response) => {
       LEFT JOIN users u ON u.id=i.investigating_user_id
       WHERE i.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM change_record_devices maintenance JOIN change_records change ON change.id=maintenance.change_record_id WHERE maintenance.device_id=i.device_id AND maintenance.ended_at IS NULL AND change.started_at<=now())
       ORDER BY i.opened_at DESC LIMIT 10`),
-    pool.query(`SELECT r.id,r.change_reference AS "changeReference",u.id AS "managerId",u.display_name AS "managerName",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",
+    pool.query(`SELECT r.id,r.change_reference AS "changeReference",r.public_description AS "publicDescription",u.id AS "managerId",u.display_name AS "managerName",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",
       CASE WHEN r.started_at>now() THEN 'scheduled' WHEN r.estimated_end_at<now() THEN 'overdue' ELSE 'active' END AS status,
       count(m.device_id)::int AS "deviceCount",array_agg(d.name ORDER BY d.name) AS "deviceNames"
       FROM change_records r JOIN users u ON u.id=r.change_manager_user_id JOIN change_record_devices m ON m.change_record_id=r.id AND m.ended_at IS NULL
@@ -345,7 +345,7 @@ app.get("/api/monitoring", async (_request, response) => {
     COALESCE(p.config->>'mode','icmp') AS "reachabilityMode",COALESCE((p.config->>'port')::integer,22) AS "tcpPort",
     latest.latency_ms AS "latencyMs",COALESCE((latest.metrics->>'packetLossPercent')::double precision,0) AS "packetLossPercent",
     COALESCE(history.points,'[]'::json) AS history,COALESCE(groups.items,'[]'::json) AS groups,d.enabled,
-    maintenance.id AS "changeId",maintenance.change_reference AS "changeReference",maintenance.manager_name AS "changeManagerName",maintenance.started_at AS "maintenanceStartedAt",
+    maintenance.id AS "changeId",maintenance.change_reference AS "changeReference",maintenance.public_description AS "changeDescription",maintenance.manager_name AS "changeManagerName",maintenance.started_at AS "maintenanceStartedAt",
     maintenance.estimated_end_at AS "maintenanceEstimatedEndAt",maintenance.change_status AS "changeStatus",
     availability.uptime_seconds AS "uptimeSeconds",availability.downtime_seconds AS "downtimeSeconds",availability.maintenance_downtime_seconds AS "maintenanceDowntimeSeconds",availability.uptime_percent AS "uptimePercent"
     FROM devices d
@@ -372,7 +372,7 @@ app.get("/api/monitoring", async (_request, response) => {
         CASE WHEN up_seconds+down_seconds>0 THEN round((100*up_seconds/(up_seconds+down_seconds))::numeric,3) ELSE NULL END AS uptime_percent FROM totals) availability ON true
     LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',g.id,'name',g.name,'color',g.color) ORDER BY g.name) AS items
       FROM device_group_memberships m JOIN device_groups g ON g.id=m.group_id WHERE m.device_id=d.id) groups ON true
-    LEFT JOIN LATERAL (SELECT r.id,r.change_reference,u.display_name AS manager_name,r.started_at,r.estimated_end_at,
+    LEFT JOIN LATERAL (SELECT r.id,r.change_reference,r.public_description,u.display_name AS manager_name,r.started_at,r.estimated_end_at,
       CASE WHEN r.started_at>now() THEN 'scheduled' WHEN r.estimated_end_at<now() THEN 'overdue' ELSE 'active' END AS change_status FROM change_record_devices m
       JOIN change_records r ON r.id=m.change_record_id JOIN users u ON u.id=r.change_manager_user_id WHERE m.device_id=d.id AND m.ended_at IS NULL LIMIT 1) maintenance ON true
     ORDER BY d.name`);
@@ -385,7 +385,7 @@ app.get("/api/change-managers",async(_request,response)=>{
 });
 
 app.get("/api/changes",async(_request,response)=>{
-  const result=await pool.query(`SELECT r.id,r.change_reference AS "changeReference",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",r.ended_at AS "endedAt",
+  const result=await pool.query(`SELECT r.id,r.change_reference AS "changeReference",r.public_description AS "publicDescription",r.started_at AS "startedAt",r.estimated_end_at AS "estimatedEndAt",r.ended_at AS "endedAt",
     u.display_name AS "managerName",u.id AS "managerId",count(m.device_id)::int AS "deviceCount",array_agg(d.name ORDER BY d.name) AS "deviceNames"
     FROM change_records r JOIN users u ON u.id=r.change_manager_user_id JOIN change_record_devices m ON m.change_record_id=r.id
     JOIN devices d ON d.id=m.device_id GROUP BY r.id,u.id ORDER BY r.started_at DESC LIMIT 100`);
@@ -394,7 +394,7 @@ app.get("/api/changes",async(_request,response)=>{
 
 app.post("/api/changes",async(request,response)=>{
   if(!requireOperator(response))return;
-  const parsed=z.object({changeReference:z.string().trim().min(1).max(200),managerId:z.string().uuid(),deviceIds:z.array(z.string().uuid()).min(1).max(500),startedAt:z.string().datetime(),estimatedEndAt:z.string().datetime()}).safeParse(request.body);
+  const parsed=z.object({changeReference:z.string().trim().min(1).max(200),publicDescription:z.string().trim().min(1).max(1000),managerId:z.string().uuid(),deviceIds:z.array(z.string().uuid()).min(1).max(500),startedAt:z.string().datetime(),estimatedEndAt:z.string().datetime()}).safeParse(request.body);
   if(!parsed.success)return response.status(400).json({error:"A change record, change manager and at least one node are required"});
   if(new Date(parsed.data.estimatedEndAt)<=new Date(parsed.data.startedAt)||new Date(parsed.data.estimatedEndAt)<=new Date())return response.status(400).json({error:"Estimated end must be after the start time and in the future"});
   const client=await pool.connect();try{await client.query("BEGIN");
@@ -402,7 +402,7 @@ app.post("/api/changes",async(request,response)=>{
     if(!manager.rowCount){await client.query("ROLLBACK");return response.status(400).json({error:"Select an active operator or administrator as change manager"});}
     const busy=await client.query(`SELECT d.name FROM change_record_devices m JOIN devices d ON d.id=m.device_id WHERE m.device_id=ANY($1::uuid[]) AND m.ended_at IS NULL`,[parsed.data.deviceIds]);
     if(busy.rowCount){await client.query("ROLLBACK");return response.status(409).json({error:`Already under maintenance: ${busy.rows.map(item=>item.name).join(", ")}`});}
-    const record=await client.query(`INSERT INTO change_records(change_reference,change_manager_user_id,created_by_user_id,started_at,estimated_end_at) VALUES($1,$2,$3,$4,$5) RETURNING id`,[parsed.data.changeReference,parsed.data.managerId,response.locals.user.id,parsed.data.startedAt,parsed.data.estimatedEndAt]);
+    const record=await client.query(`INSERT INTO change_records(change_reference,public_description,change_manager_user_id,created_by_user_id,started_at,estimated_end_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,[parsed.data.changeReference,parsed.data.publicDescription,parsed.data.managerId,response.locals.user.id,parsed.data.startedAt,parsed.data.estimatedEndAt]);
     await client.query(`INSERT INTO change_record_devices(change_record_id,device_id) SELECT $1,unnest($2::uuid[])`,[record.rows[0].id,parsed.data.deviceIds]);
     await client.query("COMMIT");return response.status(201).json(record.rows[0]);
   }catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}

@@ -94,6 +94,7 @@ export interface DashboardSummary {
   activeChanges: Array<{
     id: string;
     changeReference: string;
+    publicDescription: string;
     managerId: string;
     managerName: string;
     startedAt: string;
