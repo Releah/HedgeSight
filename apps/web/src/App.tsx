@@ -87,7 +87,7 @@ type MonitoringDevice = {
   maintenanceStartedAt: string | null;
   maintenanceEstimatedEndAt: string | null;
   changeStatus: "scheduled"|"active"|"overdue"|null;
-  sshCredentialId:string|null;sshCredentialName:string|null;sshPort:number|null;sshEnabled:boolean|null;sshIntervalSeconds:number|null;sshStatus:string|null;sshLastRunAt:string|null;sshProfile:Record<string,unknown>;sshProfiledAt:string|null;
+  sshCredentialId:string|null;sshCredentialName:string|null;sshPort:number|null;sshEnabled:boolean|null;sshIntervalSeconds:number|null;sshStatus:string|null;sshLastRunAt:string|null;sshProfile:Record<string,unknown>;sshProfiledAt:string|null;sshThresholds:Record<string,number>;
   uptimeSeconds: string | null;
   downtimeSeconds: string | null;
   maintenanceDowntimeSeconds: string | null;
@@ -116,6 +116,7 @@ type InterfaceStats = {
   outErrors: string | null;
   inDiscards: string | null;
   outDiscards: string | null;
+  errorDelta:number|null;discardDelta:number|null;
 };
 type Retention = {
   rawDays: number;
@@ -1471,7 +1472,7 @@ export function PrivateApp({
         vendor: data.get("vendor") || null,
         model: data.get("model") || null,
         groupIds: data.getAll("groupIds"),
-        sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),
+        sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),cpuThresholdPercent:Number(data.get("cpuThresholdPercent")||90),memoryThresholdPercent:Number(data.get("memoryThresholdPercent")||90),diskThresholdPercent:Number(data.get("diskThresholdPercent")||90),interfaceThresholdPercent:Number(data.get("interfaceThresholdPercent")||90),interfaceErrorThreshold:Number(data.get("interfaceErrorThreshold")||1),
       }),
     });
     if (response.ok) {
@@ -2003,7 +2004,7 @@ export function PrivateApp({
                                   <div><small>AVAILABILITY</small><strong>{device.uptimePercent===null?"—":`${Number(device.uptimePercent).toFixed(3)}%`}</strong></div>
                                   <span>Unknown and maintenance-window time are excluded from availability. Maintenance outages are tracked separately.</span>
                                 </section>
-                                {device.sshProfiledAt&&<section className="ssh-metric-strip"><div><small>SSH PROFILE</small><strong>{device.sshStatus??"unknown"}</strong><span>{relativeTime(device.sshProfiledAt)}</span></div><div><small>CPU</small><strong>{String(device.sshProfile.cpuCount??"—")} cores</strong></div><div><small>MEMORY</small><strong>{formatBytes(String(device.sshProfile.memoryBytes??0))}</strong></div><div><small>SYSTEM UPTIME</small><strong>{availabilityDuration(String(device.sshProfile.uptimeSeconds??0))}</strong></div><div><small>HIGHEST DISK USE</small><strong>{Math.max(0,...(((device.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map(item=>Number(item.usedPercent??0))))}%</strong></div></section>}
+                                {device.sshProfiledAt&&<section className="ssh-metric-strip"><div><small>RESOURCE CHECK</small><strong className={device.sshStatus==="degraded"?"threshold-breach":""}>{device.sshStatus??"unknown"}</strong><span>{relativeTime(device.sshProfiledAt)}</span></div><div><small>CPU UTILISATION</small><strong className={Number(device.sshProfile.cpuUsedPercent??0)>=Number(device.sshThresholds.cpuThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.cpuUsedPercent??0).toFixed(1)}%</strong><span>{String(device.sshProfile.cpuCount??"—")} cores</span></div><div><small>RAM UTILISATION</small><strong className={Number(device.sshProfile.memoryUsedPercent??0)>=Number(device.sshThresholds.memoryThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.memoryUsedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(device.sshProfile.memoryBytes??0))}</span></div><div><small>SYSTEM UPTIME</small><strong>{availabilityDuration(String(device.sshProfile.uptimeSeconds??0))}</strong></div><div><small>HIGHEST DISK USE</small><strong className={Math.max(0,...(((device.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map(item=>Number(item.usedPercent??0))))>=Number(device.sshThresholds.diskThresholdPercent??90)?"threshold-breach":""}>{Math.max(0,...(((device.sshProfile.filesystems as Array<Record<string,unknown>>) || []).map(item=>Number(item.usedPercent??0))))}%</strong></div></section>}
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
                                     Loading interfaces…
@@ -2012,8 +2013,8 @@ export function PrivateApp({
                                   <div className="interface-empty">
                                     <strong>No interface telemetry yet</strong>
                                     <span>
-                                      SNMP discovery will populate traffic,
-                                      utilization, errors and discards here.
+                                      Enable Advanced Linux monitoring to collect traffic,
+                                      utilization, errors and discards over SSH.
                                     </span>
                                   </div>
                                 ) : (
@@ -2022,11 +2023,9 @@ export function PrivateApp({
                                       <article
                                         key={item.id}
                                         className={
-                                          Number(item.inErrors ?? 0) +
-                                            Number(item.outErrors ?? 0) +
-                                            Number(item.inDiscards ?? 0) +
-                                            Number(item.outDiscards ?? 0) >
-                                          0
+                                          Math.max(item.utilizationInPercent??0,item.utilizationOutPercent??0)>=Number(device.sshThresholds.interfaceThresholdPercent??90)||(Number(device.sshThresholds.interfaceErrorThreshold??1)>0&&Number(item.errorDelta??0)+Number(item.discardDelta??0) >=
+                                          Number(device.sshThresholds.interfaceErrorThreshold??1)
+                                          )
                                             ? "has-errors"
                                             : ""
                                         }
@@ -2069,15 +2068,13 @@ export function PrivateApp({
                                           <div>
                                             <dt>ERRORS</dt>
                                             <dd>
-                                              {Number(item.inErrors ?? 0) +
-                                                Number(item.outErrors ?? 0)}
+                                              +{Number(item.errorDelta ?? 0)}
                                             </dd>
                                           </div>
                                           <div>
                                             <dt>DISCARDS</dt>
                                             <dd>
-                                              {Number(item.inDiscards ?? 0) +
-                                                Number(item.outDiscards ?? 0)}
+                                              +{Number(item.discardDelta ?? 0)}
                                             </dd>
                                           </div>
                                         </dl>
@@ -3323,7 +3320,7 @@ export function PrivateApp({
                   placeholder="Linux"
                 />
               </label>
-              <fieldset className="full-field ssh-config"><legend>Linux SSH profiling</legend><label className="toggle-label"><input type="checkbox" name="sshEnabled" defaultChecked={Boolean(editing.sshEnabled)}/> Enable periodic SSH profile collection</label><label>Stored credential<select name="sshCredentialId" defaultValue={editing.sshCredentialId??""}><option value="">Select credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label><label>SSH port<input name="sshPort" type="number" min="1" max="65535" defaultValue={editing.sshPort??22}/></label><label>Profile interval<select name="sshIntervalSeconds" defaultValue={editing.sshIntervalSeconds??900}><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option><option value="21600">6 hours</option></select></label><small>Create credentials under Settings → Credentials. Secrets are never displayed after saving.</small></fieldset>
+              <fieldset className="full-field ssh-config advanced-monitoring"><legend>Advanced Linux monitoring</legend><label className="toggle-label"><input type="checkbox" name="sshEnabled" defaultChecked={Boolean(editing.sshEnabled)}/> Collect active CPU, memory, disk and interface metrics over SSH</label><label>Stored credential<select name="sshCredentialId" defaultValue={editing.sshCredentialId??""}><option value="">Select credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label><label>SSH port<input name="sshPort" type="number" min="1" max="65535" defaultValue={editing.sshPort??22}/></label><label>Snapshot interval<select name="sshIntervalSeconds" defaultValue={editing.sshIntervalSeconds??900}><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label><div className="component-inventory"><strong>Discovered components</strong><span>CPU · {String(editing.sshProfile.cpuCount??"—")} cores</span><span>RAM · {formatBytes(String(editing.sshProfile.memoryBytes??0))}</span>{((editing.sshProfile.filesystems as Array<Record<string,unknown>>)||[]).map(item=><span key={`disk-${String(item.mount)}`}>Disk · {String(item.mount)}</span>)}{((editing.sshProfile.interfaces as Array<Record<string,unknown>>)||[]).map(item=><span key={`nic-${String(item.name)}`}>Interface · {String(item.name)}</span>)}</div><div className="threshold-grid"><strong>Alert thresholds</strong><label>CPU utilisation %<input name="cpuThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.cpuThresholdPercent??90}/></label><label>Memory utilisation %<input name="memoryThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.memoryThresholdPercent??90}/></label><label>Disk used %<input name="diskThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.diskThresholdPercent??90}/></label><label>Interface utilisation %<input name="interfaceThresholdPercent" type="number" min="1" max="100" defaultValue={editing.sshThresholds.interfaceThresholdPercent??90}/></label><label>Interface errors<input name="interfaceErrorThreshold" type="number" min="0" defaultValue={editing.sshThresholds.interfaceErrorThreshold??1}/></label></div><small>CPU, RAM and disk threshold breaches raise a degraded resource incident. Interface thresholds are highlighted in Monitoring.</small></fieldset>
               <label>
                 OS version
                 <input

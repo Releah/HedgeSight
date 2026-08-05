@@ -27,6 +27,10 @@ async function submit(job: ProbeJob): Promise<void> {
     body: JSON.stringify({ workerName, ...result }),
   });
   if (!response.ok) throw new Error(`Result submission failed with HTTP ${response.status}`);
+  if(job.kind==="ssh"&&Array.isArray(result.observations?.interfaces)){
+    const interfaces=result.observations.interfaces as Array<Record<string,unknown>>;
+    if(interfaces.length){const sample=await fetch(`${apiUrl}/api/workers/interface-samples`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({workerName,deviceId:job.deviceId,collectedAt:result.finishedAt,deviceUptimeTicks:String(Math.round(Number(result.observations?.uptimeSeconds??0)*100)),interfaces:interfaces.map(item=>({stableKey:String(item.name),name:String(item.name),macAddress:String(item.macAddress??""),speedBps:item.speedMbps?String(Number(item.speedMbps)*1_000_000):undefined,adminStatus:item.state==="up"?1:2,operationalStatus:item.state==="up"?1:2,counters:item.counters,metadata:{source:"linux-ssh",mtu:Number(item.mtu??0)}}))})});if(!sample.ok)console.error(`Interface sample submission failed with HTTP ${sample.status}`);}
+  }
   console.info(`${job.kind} ${job.target}: ${result.status}${result.latencyMs ? ` (${result.latencyMs.toFixed(1)}ms)` : ""}`);
 }
 

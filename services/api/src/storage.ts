@@ -109,8 +109,12 @@ storageRouter.get("/devices/:deviceId/interfaces", async (request, response) => 
     i.admin_status AS "adminStatus",i.operational_status AS "operationalStatus",i.present,i.last_seen_at AS "lastSeenAt",
     s.in_bps AS "inBps",s.out_bps AS "outBps",s.utilization_in_percent AS "utilizationInPercent",
     s.utilization_out_percent AS "utilizationOutPercent",s.in_errors AS "inErrors",s.out_errors AS "outErrors",
-    s.in_discards AS "inDiscards",s.out_discards AS "outDiscards"
-    FROM interfaces i LEFT JOIN LATERAL (SELECT * FROM interface_samples WHERE interface_id=i.id ORDER BY collected_at DESC LIMIT 1) s ON true
+    s.in_discards AS "inDiscards",s.out_discards AS "outDiscards",s.error_delta AS "errorDelta",s.discard_delta AS "discardDelta"
+    FROM interfaces i LEFT JOIN LATERAL (SELECT current.*,
+      GREATEST(0,COALESCE(current.in_errors,0)+COALESCE(current.out_errors,0)-COALESCE(previous.in_errors,current.in_errors,0)-COALESCE(previous.out_errors,current.out_errors,0)) AS error_delta,
+      GREATEST(0,COALESCE(current.in_discards,0)+COALESCE(current.out_discards,0)-COALESCE(previous.in_discards,current.in_discards,0)-COALESCE(previous.out_discards,current.out_discards,0)) AS discard_delta
+      FROM (SELECT * FROM interface_samples WHERE interface_id=i.id ORDER BY collected_at DESC LIMIT 1) current
+      LEFT JOIN LATERAL (SELECT * FROM interface_samples WHERE interface_id=i.id ORDER BY collected_at DESC OFFSET 1 LIMIT 1) previous ON true) s ON true
     WHERE i.device_id=$1 ORDER BY i.name`, [request.params.deviceId]); response.json(result.rows);
 });
 
