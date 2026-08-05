@@ -28,6 +28,8 @@ Related device incidents can be coordinated through a **Major Incident** with an
 
 The incident list groups linked incidents beneath an expandable MI workflow bar. Operators can post shared updates, open the full MI, or resolve every linked incident together. Bulk resolution requires all child incidents to have recovered and at least one shared MI update; HedgeSight adds an attributed audit update to each child before closing the children and MI transactionally.
 
+The Incidents screen is divided into **Operational incidents**, **Major incidents**, and **Metrics** tabs. Major Incident creation is launched from a compact button and completed in a modal, keeping the operational queue focused while leaving room for future incident analytics.
+
 ## Device management and groups
 
 The **Devices** and **Monitoring** pages share a management toolbar. Devices can be searched by name, address, description, OS, vendor, model, or group and filtered simultaneously by state, operating system, and custom group.
