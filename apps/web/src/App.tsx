@@ -83,6 +83,7 @@ type MonitoringDevice = {
   changeStatus: "scheduled"|"active"|"overdue"|null;
   uptimeSeconds: string | null;
   downtimeSeconds: string | null;
+  maintenanceDowntimeSeconds: string | null;
   uptimePercent: string | null;
 };
 type ChangeManager = { id:string;displayName:string;email:string };
@@ -1946,8 +1947,9 @@ export function PrivateApp({
                                 <section className="availability-strip" aria-label={`30 day availability for ${device.name}`}>
                                   <div><small>UPTIME · 30 DAYS</small><strong>{availabilityDuration(device.uptimeSeconds)}</strong></div>
                                   <div><small>DOWNTIME · 30 DAYS</small><strong className="downtime-value">{availabilityDuration(device.downtimeSeconds)}</strong></div>
+                                  <div><small>DOWN UNDER MAINTENANCE</small><strong className="maintenance-downtime-value">{availabilityDuration(device.maintenanceDowntimeSeconds)}</strong></div>
                                   <div><small>AVAILABILITY</small><strong>{device.uptimePercent===null?"—":`${Number(device.uptimePercent).toFixed(3)}%`}</strong></div>
-                                  <span>Calculated from recorded UP and DOWN probe durations; unknown time is excluded.</span>
+                                  <span>Unknown and maintenance-window time are excluded from availability. Maintenance outages are tracked separately.</span>
                                 </section>
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
