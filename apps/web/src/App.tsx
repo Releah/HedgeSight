@@ -1,9 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import type { DashboardSummary } from "@hedgesight/contracts";
-import { Activity, Bell, Box, ChevronRight, CircleGauge, Menu, Plus, Radar, Server, Settings, ShieldCheck, X } from "lucide-react";
+import { Activity, Bell, Box, CircleGauge, Database, Menu, Plus, Radar, RefreshCw, Server, Settings, ShieldCheck, X } from "lucide-react";
 
-const empty: DashboardSummary = {
-  counts: { up: 0, down: 0, degraded: 0, unknown: 0 }, devices: [], workers: [], recentIncidents: [],
+type View = "overview" | "devices" | "incidents" | "workers" | "settings";
+const empty: DashboardSummary = { counts: { up: 0, down: 0, degraded: 0, unknown: 0 }, devices: [], workers: [], recentIncidents: [] };
+const pageCopy: Record<View, { eyebrow: string; title: string; description: string }> = {
+  overview: { eyebrow: "ACTIVE MONITORING", title: "Good morning.", description: "Here’s what’s happening across your infrastructure." },
+  devices: { eyebrow: "INVENTORY", title: "Devices", description: "Manage and inspect everything monitored by HedgeSight." },
+  incidents: { eyebrow: "EVENTS", title: "Incidents", description: "Review active outages and recently resolved checks." },
+  workers: { eyebrow: "POLLING", title: "Workers", description: "Monitor the nodes executing checks across your networks." },
+  settings: { eyebrow: "CONTROL PLANE", title: "Settings", description: "Review deployment, update, and platform configuration." },
 };
 
 function relativeTime(value: string | null): string {
@@ -13,88 +19,56 @@ function relativeTime(value: string | null): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   return `${Math.floor(seconds / 3600)}h ago`;
 }
+function StatusBadge({ status }: { status: string }) { return <span className={`badge ${status}`}><i/>{status}</span>; }
+function Panel({ title, subtitle, children, className = "" }: { title: string; subtitle: string; children: ReactNode; className?: string }) {
+  return <article className={`panel ${className}`}><div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div></div>{children}</article>;
+}
+function DeviceTable({ summary, loading }: { summary: DashboardSummary; loading: boolean }) {
+  return <div className="table-wrap"><table><thead><tr><th>DEVICE</th><th>ADDRESS</th><th>CHECKS</th><th>LAST RESPONSE</th><th>STATUS</th></tr></thead><tbody>
+    {loading && <tr><td colSpan={5} className="empty">Loading infrastructure…</td></tr>}
+    {!loading && summary.devices.length === 0 && <tr><td colSpan={5} className="empty">No devices yet. Add your first monitored device.</td></tr>}
+    {summary.devices.map(device => <tr key={device.id}><td><span className="device-icon"><Server size={17}/></span><strong>{device.name}</strong></td><td className="mono">{device.address}</td><td>{device.checks}</td><td>{relativeTime(device.lastSeenAt)}</td><td><StatusBadge status={device.status}/></td></tr>)}
+  </tbody></table></div>;
+}
+function WorkerList({ summary }: { summary: DashboardSummary }) {
+  return <><div className="worker-list">{summary.workers.length === 0 && <div className="empty worker-empty">Waiting for a worker to connect…</div>}{summary.workers.map(worker => <div className="worker" key={worker.id}><span className={`worker-symbol ${worker.status}`}><Box size={18}/></span><div><strong>{worker.name}</strong><small>v{worker.version} · {relativeTime(worker.lastSeenAt)}</small></div><StatusBadge status={worker.status === "online" ? "up" : "down"}/></div>)}</div><div className="secure"><ShieldCheck size={18}/><div><strong>Outbound-only connection</strong><small>Workers never access the database directly.</small></div></div></>;
+}
+function IncidentList({ summary }: { summary: DashboardSummary }) {
+  return summary.recentIncidents.length === 0 ? <div className="calm"><ShieldCheck/><strong>All quiet</strong><p>No incidents have been recorded.</p></div> : <div className="incident-list">{summary.recentIncidents.map(incident => <div key={incident.id}><span className={`status-dot ${incident.status === "open" ? "down" : "up"}`}/><div><strong>{incident.deviceName}</strong><p>{incident.checkName}</p></div><StatusBadge status={incident.status}/><time>{relativeTime(incident.openedAt)}</time></div>)}</div>;
+}
 
 export function App() {
+  const hash = window.location.hash.slice(1) as View;
+  const [view, setView] = useState<View>(Object.hasOwn(pageCopy, hash) ? hash : "overview");
   const [summary, setSummary] = useState<DashboardSummary>(empty);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
 
-  async function refresh() {
-    try {
-      const response = await fetch("/api/dashboard");
-      if (!response.ok) throw new Error("Dashboard is unavailable");
-      setSummary(await response.json()); setError("");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load dashboard"); }
-    finally { setLoading(false); }
-  }
-
+  async function refresh() { try { const response = await fetch("/api/dashboard"); if (!response.ok) throw new Error("Dashboard is unavailable"); setSummary(await response.json()); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load dashboard"); } finally { setLoading(false); } }
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 10_000); return () => clearInterval(timer); }, []);
-
-  async function addDevice(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const response = await fetch("/api/devices", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: data.get("name"), address: data.get("address"), description: data.get("description") }) });
-    if (response.ok) { setDialog(false); await refresh(); }
-  }
+  useEffect(() => { const onHash = () => { const next = window.location.hash.slice(1) as View; if (Object.hasOwn(pageCopy, next)) setView(next); }; window.addEventListener("hashchange", onHash); return () => window.removeEventListener("hashchange", onHash); }, []);
+  function navigate(next: View) { setView(next); window.location.hash = next; setMobileNav(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  async function addDevice(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const response = await fetch("/api/devices", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: data.get("name"), address: data.get("address"), description: data.get("description") }) }); if (response.ok) { setDialog(false); await refresh(); navigate("devices"); } }
 
   const total = Object.values(summary.counts).reduce((sum, count) => sum + count, 0);
   const healthyPercent = total ? Math.round((summary.counts.up / total) * 100) : 0;
+  const openIncidents = summary.recentIncidents.filter(incident => incident.status === "open").length;
+  const copy = pageCopy[view];
+  const nav = (next: View, icon: ReactNode, label: string, count?: ReactNode) => <button className={view === next ? "active" : ""} onClick={() => navigate(next)}>{icon}{label}{count}</button>;
 
   return <div className="shell">
-    <aside className={mobileNav ? "sidebar open" : "sidebar"}>
-      <div className="brand"><div className="brandmark"><Radar size={24} /></div><span>Hedge<span>Sight</span></span><button className="mobile-close" onClick={() => setMobileNav(false)}><X /></button></div>
-      <nav aria-label="Main navigation">
-        <a className="active" href="#overview"><CircleGauge /> Overview</a>
-        <a href="#devices"><Server /> Devices <span className="nav-count">{total}</span></a>
-        <a href="#incidents"><Bell /> Incidents <span className="nav-count alert">{summary.recentIncidents.filter(i => i.status === "open").length}</span></a>
-        <a href="#workers"><Box /> Workers</a>
-      </nav>
-      <div className="sidebar-bottom">
-        <a href="#settings"><Settings /> Settings</a>
-        <div className="system-state"><span className="pulse"/><div><strong>System operational</strong><small>Control plane online</small></div></div>
-      </div>
-    </aside>
-
-    <main>
-      <header><button className="menu" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu /></button><div><p className="eyebrow">ACTIVE MONITORING</p><h1>Good morning.</h1><p>Here’s what’s happening across your infrastructure.</p></div><button className="primary" onClick={() => setDialog(true)}><Plus size={17}/> Add device</button></header>
-      {error && <div className="error">{error}. Retrying automatically.</div>}
-
-      <section className="stats" aria-label="Device status summary">
-        <article className="stat hero-stat"><div className="ring" style={{"--value": `${healthyPercent * 3.6}deg`} as React.CSSProperties}><span>{healthyPercent}%</span></div><div><small>OVERALL HEALTH</small><strong>{summary.counts.up} of {total} devices healthy</strong><p>Calculated from active checks</p></div></article>
-        <article className="stat"><span className="status-dot up"/><small>ONLINE</small><strong>{summary.counts.up}</strong><p>Devices responding</p></article>
-        <article className="stat"><span className="status-dot down"/><small>DOWN</small><strong>{summary.counts.down}</strong><p>Needs attention</p></article>
-        <article className="stat"><span className="status-dot unknown"/><small>UNKNOWN</small><strong>{summary.counts.unknown + summary.counts.degraded}</strong><p>Pending or degraded</p></article>
-      </section>
-
-      <section className="grid">
-        <article className="panel devices" id="devices">
-          <div className="panel-heading"><div><h2>Infrastructure</h2><p>Live device health from your polling workers</p></div><button className="text-button">View all <ChevronRight size={16}/></button></div>
-          <div className="table-wrap"><table><thead><tr><th>DEVICE</th><th>ADDRESS</th><th>CHECKS</th><th>LAST RESPONSE</th><th>STATUS</th></tr></thead><tbody>
-            {loading && <tr><td colSpan={5} className="empty">Loading infrastructure…</td></tr>}
-            {!loading && summary.devices.length === 0 && <tr><td colSpan={5} className="empty">No devices yet. Add your first monitored device.</td></tr>}
-            {summary.devices.map(device => <tr key={device.id}><td><span className="device-icon"><Server size={17}/></span><strong>{device.name}</strong></td><td className="mono">{device.address}</td><td>{device.checks}</td><td>{relativeTime(device.lastSeenAt)}</td><td><span className={`badge ${device.status}`}><i/>{device.status}</span></td></tr>)}
-          </tbody></table></div>
-        </article>
-
-        <article className="panel workers" id="workers">
-          <div className="panel-heading"><div><h2>Polling workers</h2><p>Probe execution nodes</p></div><Activity size={18}/></div>
-          <div className="worker-list">
-            {summary.workers.length === 0 && <div className="empty worker-empty">Waiting for a worker to connect…</div>}
-            {summary.workers.map(worker => <div className="worker" key={worker.id}><span className={`worker-symbol ${worker.status}`}><Box size={18}/></span><div><strong>{worker.name}</strong><small>v{worker.version} · {relativeTime(worker.lastSeenAt)}</small></div><span className={`badge ${worker.status === "online" ? "up" : "down"}`}><i/>{worker.status}</span></div>)}
-          </div>
-          <div className="secure"><ShieldCheck size={18}/><div><strong>Outbound-only connection</strong><small>Workers never access the database directly.</small></div></div>
-        </article>
-
-        <article className="panel incidents" id="incidents">
-          <div className="panel-heading"><div><h2>Recent incidents</h2><p>Latest state changes across all checks</p></div></div>
-          {summary.recentIncidents.length === 0 ? <div className="calm"><ShieldCheck/><strong>All quiet</strong><p>No incidents have been recorded.</p></div> : <div className="incident-list">{summary.recentIncidents.map(incident => <div key={incident.id}><span className={`status-dot ${incident.status === "open" ? "down" : "up"}`}/><div><strong>{incident.deviceName}</strong><p>{incident.checkName}</p></div><time>{relativeTime(incident.openedAt)}</time></div>)}</div>}
-        </article>
-      </section>
+    <aside className={mobileNav ? "sidebar open" : "sidebar"}><div className="brand"><div className="brandmark"><Radar size={24}/></div><span>Hedge<span>Sight</span></span><button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="Close navigation"><X/></button></div><nav aria-label="Main navigation">
+      {nav("overview", <CircleGauge/>, "Overview")}{nav("devices", <Server/>, "Devices", <span className="nav-count">{total}</span>)}{nav("incidents", <Bell/>, "Incidents", <span className="nav-count alert">{openIncidents}</span>)}{nav("workers", <Box/>, "Workers")}
+    </nav><div className="sidebar-bottom">{nav("settings", <Settings/>, "Settings")}<div className="system-state"><span className="pulse"/><div><strong>System operational</strong><small>Control plane online</small></div></div></div></aside>
+    <main><header><button className="menu" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu/></button><div><p className="eyebrow">{copy.eyebrow}</p><h1>{copy.title}</h1><p>{copy.description}</p></div>{(view === "overview" || view === "devices") && <button className="primary" onClick={() => setDialog(true)}><Plus size={17}/> Add device</button>}</header>{error && <div className="error">{error}. Retrying automatically.</div>}
+      {view === "overview" && <><section className="stats" aria-label="Device status summary"><article className="stat hero-stat"><div className="ring" style={{ "--value": `${healthyPercent * 3.6}deg` } as CSSProperties}><span>{healthyPercent}%</span></div><div><small>OVERALL HEALTH</small><strong>{summary.counts.up} of {total} devices healthy</strong><p>Calculated from active checks</p></div></article><article className="stat"><span className="status-dot up"/><small>ONLINE</small><strong>{summary.counts.up}</strong><p>Devices responding</p></article><article className="stat"><span className="status-dot down"/><small>DOWN</small><strong>{summary.counts.down}</strong><p>Needs attention</p></article><article className="stat"><span className="status-dot unknown"/><small>UNKNOWN</small><strong>{summary.counts.unknown + summary.counts.degraded}</strong><p>Pending or degraded</p></article></section><section className="grid"><Panel title="Infrastructure" subtitle="Live device health from your polling workers" className="devices"><DeviceTable summary={summary} loading={loading}/><button className="panel-link" onClick={() => navigate("devices")}>Open device inventory</button></Panel><Panel title="Polling workers" subtitle="Probe execution nodes" className="workers"><WorkerList summary={summary}/></Panel><Panel title="Recent incidents" subtitle="Latest state changes across all checks" className="incidents"><IncidentList summary={summary}/></Panel></section></>}
+      {view === "devices" && <section className="page-grid"><Panel title="Device inventory" subtitle={`${total} configured device${total === 1 ? "" : "s"}`} className="full-panel"><DeviceTable summary={summary} loading={loading}/></Panel><div className="info-strip"><Radar/><div><strong>Protocol checks</strong><p>Ping and HTTP/HTTPS are active. SNMP and SSH are planned for the secure credential phase.</p></div></div></section>}
+      {view === "incidents" && <section className="page-grid"><div className="summary-row"><div><span className="status-dot down"/><strong>{openIncidents}</strong><small>OPEN</small></div><div><span className="status-dot up"/><strong>{summary.recentIncidents.filter(i => i.status === "resolved").length}</strong><small>RESOLVED RECENTLY</small></div></div><Panel title="Incident history" subtitle="Open and recently resolved monitoring events" className="full-panel"><IncidentList summary={summary}/></Panel></section>}
+      {view === "workers" && <section className="page-grid"><Panel title="Polling workers" subtitle={`${summary.workers.length} registered execution node${summary.workers.length === 1 ? "" : "s"}`} className="full-panel"><WorkerList summary={summary}/></Panel><div className="info-strip"><Activity/><div><strong>Worker heartbeat</strong><p>Workers are shown offline when no heartbeat has been received for 60 seconds.</p></div></div></section>}
+      {view === "settings" && <section className="settings-grid"><div className="setting-card"><Database/><div><span>DATA STORE</span><h2>PostgreSQL</h2><p>Connected through the application control plane.</p></div><StatusBadge status="up"/></div><div className="setting-card"><RefreshCw/><div><span>UPDATE CHANNEL</span><h2>Stable</h2><p>Automatic updates remain opt-in through the updater profile.</p></div><span className="setting-value">0.1.0-dev</span></div><div className="setting-card"><ShieldCheck/><div><span>WORKER SECURITY</span><h2>Outbound only</h2><p>Polling workers have no direct access to PostgreSQL.</p></div><StatusBadge status="up"/></div></section>}
     </main>
-
-    {dialog && <div className="modal-backdrop" onMouseDown={() => setDialog(false)}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-title" onMouseDown={e => e.stopPropagation()}><button className="modal-close" onClick={() => setDialog(false)}><X/></button><p className="eyebrow">DEVICE INVENTORY</p><h2 id="add-title">Add a monitored device</h2><p>Create the device first, then attach protocol checks through the API.</p><form onSubmit={addDevice}><label>Name<input name="name" placeholder="Core switch 01" required autoFocus /></label><label>Address<input name="address" placeholder="10.20.0.1" required /></label><label>Description<textarea name="description" placeholder="Primary distribution switch" rows={3}/></label><div className="modal-actions"><button type="button" className="secondary" onClick={() => setDialog(false)}>Cancel</button><button className="primary">Add device</button></div></form></section></div>}
+    {dialog && <div className="modal-backdrop" onMouseDown={() => setDialog(false)}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => setDialog(false)} aria-label="Close"><X/></button><p className="eyebrow">DEVICE INVENTORY</p><h2 id="add-title">Add a monitored device</h2><p>Create the device first, then attach protocol checks through the API.</p><form onSubmit={addDevice}><label>Name<input name="name" placeholder="Core switch 01" required autoFocus/></label><label>Address<input name="address" placeholder="10.20.0.1" required/></label><label>Description<textarea name="description" placeholder="Primary distribution switch" rows={3}/></label><div className="modal-actions"><button type="button" className="secondary" onClick={() => setDialog(false)}>Cancel</button><button className="primary">Add device</button></div></form></section></div>}
   </div>;
 }
