@@ -23,6 +23,46 @@ export interface ProbeResult {
   observations?: Record<string, string | number | boolean | null>;
 }
 
+export interface InterfaceObservation {
+  stableKey: string;
+  snmpIndex?: number;
+  name: string;
+  alias?: string;
+  description?: string;
+  macAddress?: string;
+  interfaceType?: number;
+  speedBps?: string;
+  adminStatus?: number;
+  operationalStatus?: number;
+  counters: {
+    inOctets?: string;
+    outOctets?: string;
+    inUnicastPackets?: string;
+    outUnicastPackets?: string;
+    inErrors?: string;
+    outErrors?: string;
+    inDiscards?: string;
+    outDiscards?: string;
+  };
+  metadata?: Record<string, string | number | boolean | null>;
+}
+
+export interface InterfaceSampleBatch {
+  deviceId: string;
+  collectedAt: string;
+  deviceUptimeTicks?: string;
+  interfaces: InterfaceObservation[];
+}
+
+export interface RetentionPolicy {
+  rawDays: number;
+  fiveMinuteDays: number;
+  hourlyDays: number;
+  dailyDays: number;
+  incidentDays: number;
+  configurationDays: number;
+}
+
 export interface DashboardSummary {
   counts: Record<Status, number>;
   devices: Array<{

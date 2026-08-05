@@ -12,6 +12,7 @@ services:
       WORKER_TOKEN: ${WORKER_TOKEN:-local-development-token}
       HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-0.1.0-dev}
       UPDATE_CHANNEL: ${UPDATE_CHANNEL:-stable}
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:-local-development-configuration-key-change-me}
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:

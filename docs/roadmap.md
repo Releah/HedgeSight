@@ -8,12 +8,22 @@
 - Live dashboard, device creation, incidents, and worker presence
 - Version endpoints, release images, and opt-in container updater
 
+## Storage foundation — current
+
+- Native PostgreSQL partitions for raw metric and interface samples
+- Stable interface inventory and 64-bit-safe counter ingestion
+- Derived traffic rates with reboot and counter-reset detection
+- Five-minute, hourly, and daily interface rollups
+- Global retention policy and per-device override API
+- Deduplicated, encrypted configuration snapshots
+- Storage status and maintenance controls in Settings
+
 ## Operational alpha
 
 - Authentication, users, and role-based access
 - Per-worker one-time enrollment and credential rotation
 - Complete device and check management interface
-- Result history, charts, maintenance windows, and retention
+- Result history, charts, and maintenance windows
 - Retry policy and configurable state transition thresholds
 - Alert delivery through email and signed webhooks
 

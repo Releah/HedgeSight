@@ -5,13 +5,16 @@ import { z } from "zod";
 import { hashToken, validToken } from "./auth.js";
 import { migrate, pool } from "./db.js";
 import { startScheduler } from "./scheduler.js";
+import { startStorageMaintenance } from "./maintenance.js";
+import { storageRouter } from "./storage.js";
 
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const port = Number(process.env.APP_PORT ?? 8080);
 const app = express();
 
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: "256kb" }));
+app.use(express.json({ limit: "12mb" }));
+app.use("/api", storageRouter);
 
 app.get("/api/health", async (_request, response) => {
   try {
@@ -141,6 +144,10 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
     const inserted = await client.query(`INSERT INTO probe_results(job_id, check_id, worker_id, status, started_at, finished_at, latency_ms, message, metrics, observations)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [request.params.jobId, row.check_id, row.worker_id, value.status, value.startedAt, value.finishedAt, value.latencyMs, value.message, value.metrics, value.observations]);
+    await client.query(`INSERT INTO metric_samples(collected_at,device_id,check_id,metric_key,value)
+      SELECT $1,$2,$3,key,value::double precision FROM jsonb_each_text($4::jsonb)
+      ON CONFLICT(collected_at,device_id,metric_key) DO UPDATE SET value=EXCLUDED.value`,
+      [value.finishedAt,row.device_id,row.check_id,value.metrics]);
     await client.query("UPDATE probe_jobs SET state='completed', completed_at=now() WHERE id=$1", [request.params.jobId]);
     await client.query("UPDATE checks SET last_status=$2, last_run_at=$3, updated_at=now() WHERE id=$1", [row.check_id, value.status, value.finishedAt]);
     if (value.status === "down") {
@@ -170,4 +177,5 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 
 await migrate();
 startScheduler();
+startStorageMaintenance();
 app.listen(port, "0.0.0.0", () => console.info(`HedgeSight ${version} listening on ${port}`));

@@ -4,6 +4,25 @@ HedgeSight is a self-hosted active infrastructure monitoring platform. Its contr
 
 This initial build supports ICMP Ping and HTTP/HTTPS checks. SNMP and SSH are included in the data model and will be enabled as their secure probe implementations mature.
 
+## Scalable monitoring storage
+
+HedgeSight stores availability results, generic numeric metrics, interface counters, rollups, and configuration snapshots separately. Interface counters use PostgreSQL numeric values so 64-bit SNMP counters are not truncated by JavaScript. Daily PostgreSQL partitions are prepared automatically for raw interface and metric samples.
+
+The default retention policy is configurable from **Settings**:
+
+| Data | Default retention |
+| --- | ---: |
+| Raw samples | 30 days |
+| 5-minute rollups | 90 days |
+| Hourly rollups | 365 days |
+| Daily rollups | 1,825 days |
+| Incidents | 730 days |
+| Configuration snapshots | 365 days |
+
+Each device can override any of these values through `PUT /api/devices/{deviceId}/retention`; omitted values inherit the global setting. Maintenance creates rollups before deleting expired raw samples and normally runs hourly.
+
+Configuration snapshots are compressed, AES-256 encrypted through PostgreSQL `pgcrypto`, and deduplicated by device, configuration type, and SHA-256 content hash. Set a strong, persistent `CONFIG_ENCRYPTION_KEY` before storing configurations. Losing this key makes existing snapshots unrecoverable.
+
 ## Start locally
 
 1. Copy `.env.example` to `.env` and replace both development secrets.
@@ -94,6 +113,7 @@ Run PostgreSQL separately or start only the bundled database with `docker compos
 - Probe targets are passed to fixed protocol implementations; no shell is invoked for arbitrary commands.
 - Ping arguments are passed directly to the executable without shell expansion.
 - SNMP and SSH checks cannot currently be scheduled.
+- Configuration snapshots require a stable `CONFIG_ENCRYPTION_KEY`; changing it prevents older snapshots from being decrypted.
 - User authentication, granular authorization, encrypted credential storage, and individual worker identities remain required before an internet-facing production deployment.
 
 See [docs/architecture.md](docs/architecture.md) and [docs/roadmap.md](docs/roadmap.md) for the design and staged delivery plan.
