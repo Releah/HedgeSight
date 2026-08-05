@@ -65,6 +65,7 @@ export interface RetentionPolicy {
 
 export interface DashboardSummary {
   counts: Record<Status, number>;
+  maintenanceCount: number;
   devices: Array<{
     id: string;
     name: string;
@@ -89,5 +90,14 @@ export interface DashboardSummary {
     resolvedAt: string | null;
     recoveredAt: string | null;
     investigatorName: string | null;
+  }>;
+  activeChanges: Array<{
+    id: string;
+    changeReference: string;
+    managerId: string;
+    managerName: string;
+    startedAt: string;
+    deviceCount: number;
+    deviceNames: string[];
   }>;
 }

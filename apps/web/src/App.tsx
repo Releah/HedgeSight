@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Trash2,
   Users,
+  Wrench,
   X,
 } from "lucide-react";
 
@@ -73,7 +74,12 @@ type MonitoringDevice = {
     status: string;
   }>;
   groups: DeviceGroup[];
+  changeId: string | null;
+  changeReference: string | null;
+  changeManagerName: string | null;
+  maintenanceStartedAt: string | null;
 };
+type ChangeManager = { id:string;displayName:string;email:string };
 type InterfaceStats = {
   id: string;
   name: string;
@@ -208,9 +214,11 @@ type MajorIncidentDetail = MajorIncident & {
 };
 const empty: DashboardSummary = {
   counts: { up: 0, down: 0, degraded: 0, unknown: 0 },
+  maintenanceCount: 0,
   devices: [],
   workers: [],
   recentIncidents: [],
+  activeChanges: [],
 };
 const pageCopy: Record<
   View,
@@ -782,6 +790,7 @@ type PublicStatus = {
     down: number;
     degraded: number;
     unknown: number;
+    maintenance: number;
     total: number;
   };
   activeIncidents: number;
@@ -799,8 +808,9 @@ function PublicHealth() {
     const timer = setInterval(load, 15_000);
     return () => clearInterval(timer);
   }, []);
-  const healthy = status?.counts.total
-    ? Math.round((status.counts.up / status.counts.total) * 100)
+  const alertingTotal=status?status.counts.total-status.counts.maintenance:0;
+  const healthy = alertingTotal
+    ? Math.round(((status?.counts.up??0) / alertingTotal) * 100)
     : 0;
   return (
     <div className="public-shell">
@@ -856,11 +866,9 @@ function PublicHealth() {
               <small>DOWN</small>
             </article>
             <article>
-              <span className="status-dot unknown" />
-              <strong>
-                {(status?.counts.unknown ?? 0) + (status?.counts.degraded ?? 0)}
-              </strong>
-              <small>OTHER</small>
+              <span className="status-dot maintenance" />
+              <strong>{status?.counts.maintenance ?? 0}</strong>
+              <small>MAINTENANCE</small>
             </article>
             <article>
               <Bell />
@@ -1080,6 +1088,10 @@ export function PrivateApp({
     "incidents" | "major" | "history" | "metrics"
   >("incidents");
   const [majorDialog, setMajorDialog] = useState(false);
+  const [changeDialog,setChangeDialog]=useState(false);
+  const [selectedDevices,setSelectedDevices]=useState<string[]>([]);
+  const [changeManagers,setChangeManagers]=useState<ChangeManager[]>([]);
+  const [changeError,setChangeError]=useState("");
 
   async function refresh() {
     try {
@@ -1089,12 +1101,14 @@ export function PrivateApp({
         groupsResponse,
         incidentsResponse,
         majorResponse,
+        managersResponse,
       ] = await Promise.all([
         fetch("/api/dashboard"),
         fetch("/api/monitoring"),
         fetch("/api/groups"),
         fetch("/api/incidents"),
         fetch("/api/major-incidents"),
+        fetch("/api/change-managers"),
       ]);
       if (
         !dashboardResponse.ok ||
@@ -1102,6 +1116,7 @@ export function PrivateApp({
         !groupsResponse.ok ||
         !incidentsResponse.ok ||
         !majorResponse.ok
+        || !managersResponse.ok
       )
         throw new Error("Dashboard is unavailable");
       setSummary(await dashboardResponse.json());
@@ -1109,6 +1124,7 @@ export function PrivateApp({
       setGroups(await groupsResponse.json());
       setIncidents(await incidentsResponse.json());
       setMajorIncidents(await majorResponse.json());
+      setChangeManagers(await managersResponse.json());
       setError("");
     } catch (cause) {
       setError(
@@ -1242,6 +1258,19 @@ export function PrivateApp({
         (await response.json()).error ?? "Unable to archive incident",
       );
   }
+  function openChangeDialog(deviceIds:string[]){setSelectedDevices(deviceIds);setChangeError("");setChangeDialog(true);}
+  async function createChange(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();const form=event.currentTarget,data=new FormData(form);
+    const response=await fetch("/api/changes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({changeReference:data.get("changeReference"),managerId:data.get("managerId"),deviceIds:selectedDevices})});
+    if(response.ok){form.reset();setChangeDialog(false);setSelectedDevices([]);await refresh();}
+    else setChangeError((await response.json()).error??"Unable to start change");
+  }
+  async function returnChange(id:string){
+    if(!confirm("Return every node in this change to normal monitoring?"))return;
+    const response=await fetch(`/api/changes/${id}/return`,{method:"POST"});
+    if(response.ok)await refresh();else setError((await response.json()).error??"Unable to return nodes");
+  }
+  function toggleSelectedDevice(id:string){setSelectedDevices(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);}
   async function createMajorIncident(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget,
@@ -1513,9 +1542,9 @@ export function PrivateApp({
   const total = Object.values(summary.counts).reduce(
     (sum, count) => sum + count,
     0,
-  );
+  ) + summary.maintenanceCount;
   const healthyPercent = total
-    ? Math.round((summary.counts.up / total) * 100)
+    ? Math.round((summary.counts.up / Math.max(1,total-summary.maintenanceCount)) * 100)
     : 0;
   const openIncidents = incidents.filter(
     (incident) => incident.status !== "resolved",
@@ -1627,6 +1656,11 @@ export function PrivateApp({
       <span className="result-count">
         {filteredMonitoring.length} of {monitoring.length}
       </span>
+      {view === "monitoring" && (
+        <button className="maintenance-action" disabled={!selectedDevices.length} onClick={()=>openChangeDialog(selectedDevices)}>
+          <Wrench size={15}/> Start change {selectedDevices.length?`(${selectedDevices.length})`:""}
+        </button>
+      )}
     </div>
   );
 
@@ -1737,27 +1771,21 @@ export function PrivateApp({
                 <p>Needs attention</p>
               </article>
               <article className="stat">
-                <span className="status-dot unknown" />
-                <small>UNKNOWN</small>
-                <strong>
-                  {summary.counts.unknown + summary.counts.degraded}
-                </strong>
-                <p>Pending or degraded</p>
+                <span className="status-dot maintenance" />
+                <small>MAINTENANCE</small>
+                <strong>{summary.maintenanceCount}</strong>
+                <p>Protected by active changes</p>
               </article>
             </section>
             <section className="grid">
               <Panel
-                title="Infrastructure"
-                subtitle="Live device health from your polling workers"
+                title="Active changes"
+                subtitle="Nodes protected from outage alerting"
                 className="devices"
               >
-                <DeviceTable summary={summary} loading={loading} />
-                <button
-                  className="panel-link"
-                  onClick={() => navigate("devices")}
-                >
-                  Open device inventory
-                </button>
+                <div className="active-change-list">
+                  {summary.activeChanges.length?summary.activeChanges.map(change=><article key={change.id}><span className="change-icon"><Wrench size={16}/></span><div><strong>{change.changeReference}</strong><small>{change.deviceNames.join(", ")}</small><small>{change.managerName} · started {relativeTime(change.startedAt)}</small></div><button className="change-return" disabled={user.role!=="admin"&&change.managerId!==user.id} title={user.role!=="admin"&&change.managerId!==user.id?`Assigned to ${change.managerName}`:"Return nodes to normal monitoring"} onClick={()=>void returnChange(change.id)}>Return to service</button></article>):<div className="change-empty"><ShieldCheck size={20}/><strong>No active changes</strong><span>All nodes are under normal alerting.</span></div>}
+                </div>
               </Panel>
               <Panel
                 title="Polling workers"
@@ -1779,7 +1807,7 @@ export function PrivateApp({
             </section>
           </>
         )}
-        {view === "monitoring" && (
+      {view === "monitoring" && ["admin","operator"].includes(user.role) && (
           <section className="page-grid">
             {managementToolbar}
             <Panel
@@ -1791,6 +1819,7 @@ export function PrivateApp({
                 <table className="monitoring-table">
                   <thead>
                     <tr>
+                      <th className="select-column"><input type="checkbox" aria-label="Select all visible nodes" checked={filteredMonitoring.filter(item=>!item.changeId).length>0&&filteredMonitoring.filter(item=>!item.changeId).every(item=>selectedDevices.includes(item.id))} onChange={(event)=>setSelectedDevices(event.target.checked?filteredMonitoring.filter(item=>!item.changeId).map(item=>item.id):[])}/></th>
                       <th>DEVICE</th>
                       <th>REACHABILITY</th>
                       <th>RESPONSE HISTORY</th>
@@ -1802,14 +1831,14 @@ export function PrivateApp({
                   <tbody>
                     {loading && (
                       <tr>
-                        <td colSpan={6} className="empty">
+                        <td colSpan={7} className="empty">
                           Loading live monitoring…
                         </td>
                       </tr>
                     )}
                     {!loading && filteredMonitoring.length === 0 && (
                       <tr>
-                        <td colSpan={6} className="empty">
+                        <td colSpan={7} className="empty">
                           No devices match these filters.
                         </td>
                       </tr>
@@ -1818,6 +1847,7 @@ export function PrivateApp({
                       filteredMonitoring.map((device) => (
                         <Fragment key={device.id}>
                           <tr className="expandable-row">
+                            <td className="select-column"><input type="checkbox" aria-label={`Select ${device.name}`} disabled={Boolean(device.changeId)} checked={selectedDevices.includes(device.id)} onChange={()=>toggleSelectedDevice(device.id)}/></td>
                             <td>
                               <span className="device-icon">
                                 <Server size={17} />
@@ -1847,14 +1877,18 @@ export function PrivateApp({
                             <td>
                               <StatusBadge
                                 status={
-                                  device.enabled
+                                  device.changeId
+                                    ? "maintenance"
+                                    : device.enabled
                                     ? (device.pingStatus ?? "unknown")
                                     : "disabled"
                                 }
                               />
+                              {device.changeId&&<small className="maintenance-detail">{device.changeReference} · {device.changeManagerName}</small>}
                             </td>
                             <td>
                               <div className="row-actions">
+                                {!device.changeId&&["admin","operator"].includes(user.role)&&<button className="device-jump maintenance-node" onClick={()=>openChangeDialog([device.id])} title="Put under change" aria-label={`Put ${device.name} under change`}><Wrench size={15}/></button>}
                                 <button
                                   className="device-jump"
                                   onClick={() => openDevice(device)}
@@ -1877,7 +1911,7 @@ export function PrivateApp({
                           </tr>
                           {expandedDevice === device.id && (
                             <tr className="interface-detail">
-                              <td colSpan={6}>
+                              <td colSpan={7}>
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
                                     Loading interfaces…
@@ -3313,6 +3347,23 @@ export function PrivateApp({
                 </button>
                 <button className="primary">Save account</button>
               </div>
+            </form>
+          </section>
+        </div>
+      )}
+      {changeDialog && (
+        <div className="modal-backdrop" onMouseDown={()=>setChangeDialog(false)}>
+          <section className="modal change-modal" role="dialog" aria-modal="true" aria-labelledby="change-title" onMouseDown={event=>event.stopPropagation()}>
+            <button className="modal-close" onClick={()=>setChangeDialog(false)} aria-label="Close"><X/></button>
+            <p className="eyebrow">CHANGE MANAGEMENT</p>
+            <h2 id="change-title">Put {selectedDevices.length} node{selectedDevices.length===1?"":"s"} under change</h2>
+            <p>Polling continues, but down states and new outage incidents are suppressed until the assigned manager returns these nodes.</p>
+            <form onSubmit={createChange}>
+              <label>Change record<input name="changeReference" required autoFocus maxLength={200} placeholder="CHG0001234 — Core switch upgrade"/></label>
+              <label>Change manager<select name="managerId" required defaultValue={user.id}>{changeManagers.map(manager=><option key={manager.id} value={manager.id}>{manager.displayName} · {manager.email}</option>)}</select></label>
+              <div className="change-node-list">{selectedDevices.map(id=>{const device=monitoring.find(item=>item.id===id);return device?<span key={id}><Server size={13}/>{device.name}<small>{device.address}</small></span>:null})}</div>
+              {changeError&&<div className="form-error">{changeError}</div>}
+              <div className="modal-actions"><button type="button" className="secondary" onClick={()=>setChangeDialog(false)}>Cancel</button><button className="primary"><Wrench size={15}/> Start maintenance</button></div>
             </form>
           </section>
         </div>

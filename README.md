@@ -14,6 +14,12 @@ Reachability can use either ICMP echo or a TCP connection to a configurable port
 
 Monitoring rows expand to show the latest interface traffic, utilization, errors, and discards, refreshing every 10 seconds. Until SNMP discovery has populated interface telemetry, the expanded view explains that no interface data is available. Device configuration and profile management remain on the separate **Devices** page.
 
+## Change management and maintenance
+
+Operators can select one or more nodes on the **Monitoring** page and place them under an immediate change record. Each change requires a reference and an assigned operator or administrator who becomes the change manager responsible for returning the nodes to service.
+
+Polling and metric collection continue during maintenance, but down results do not raise new incidents and maintained nodes are excluded from outage counts. The Monitoring page shows the active change and manager on each protected node, while the Overview replaces the generic infrastructure panel with active changes and return-to-service controls. Only the assigned manager or an administrator can end a change.
+
 ## Incident workflow
 
 A failed check raises an **Open** incident. An operator can claim a currently down incident, moving it to **Under investigation** and displaying their name on the Overview and incident pages. Successful polling records the recovery timestamp and moves the incident to **Pending investigation**; recovery does not automatically close it.
