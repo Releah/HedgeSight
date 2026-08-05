@@ -225,8 +225,11 @@ app.get("/api/dashboard", async (_request, response) => {
 app.get("/api/incidents",async(_request,response)=>{
   const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",
     d.id AS "deviceId",d.name AS "deviceName",d.address,d.status AS "deviceStatus",c.name AS "checkName",c.kind AS "checkKind",
-    u.display_name AS "investigatorName",(SELECT count(*)::int FROM incident_updates x WHERE x.incident_id=i.id) AS "updateCount"
+    u.display_name AS "investigatorName",(SELECT count(*)::int FROM incident_updates x WHERE x.incident_id=i.id) AS "updateCount",
+    m.id AS "majorIncidentId",CASE WHEN m.id IS NULL THEN NULL ELSE 'MI-'||to_char(m.opened_at,'YYYY')||'-'||lpad(m.number::text,4,'0') END AS "majorIncidentReference",
+    m.title AS "majorIncidentTitle",m.severity AS "majorIncidentSeverity",m.status AS "majorIncidentStatus"
     FROM incidents i JOIN checks c ON c.id=i.check_id JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=i.investigating_user_id
+    LEFT JOIN major_incident_members mm ON mm.incident_id=i.id LEFT JOIN major_incidents m ON m.id=mm.major_incident_id
     ORDER BY CASE WHEN i.status='resolved' THEN 1 ELSE 0 END,i.opened_at DESC LIMIT 200`);
   response.json(result.rows);
 });
@@ -289,6 +292,21 @@ app.post("/api/major-incidents",async(request,response)=>{
 app.post("/api/major-incidents/:majorId/updates",async(request,response)=>{const parsed=z.object({body:z.string().trim().min(1).max(4000)}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Update is required"});const result=await pool.query(`INSERT INTO major_incident_updates(major_incident_id,user_id,body) VALUES($1,$2,$3) RETURNING id`,[request.params.majorId,response.locals.user.id,parsed.data.body]);return response.status(201).json(result.rows[0]);});
 app.post("/api/major-incidents/:majorId/members",async(request,response)=>{const parsed=z.object({incidentIds:z.array(z.string().uuid())}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Invalid incidents"});for(const id of parsed.data.incidentIds)await pool.query(`INSERT INTO major_incident_members(major_incident_id,incident_id) VALUES($1,$2) ON CONFLICT(incident_id) DO UPDATE SET major_incident_id=EXCLUDED.major_incident_id`,[request.params.majorId,id]);return response.json({linked:parsed.data.incidentIds.length});});
 app.post("/api/major-incidents/:majorId/resolve",async(request,response)=>{await pool.query("UPDATE major_incidents SET status='resolved',resolved_at=now() WHERE id=$1",[request.params.majorId]);return response.json({resolved:true});});
+app.post("/api/major-incidents/:majorId/resolve-all",async(request,response)=>{
+  const client=await pool.connect();try{await client.query("BEGIN");await client.query("SELECT id FROM major_incidents WHERE id=$1 FOR UPDATE",[request.params.majorId]);const major=await client.query(`SELECT m.id,m.title,'MI-'||to_char(m.opened_at,'YYYY')||'-'||lpad(m.number::text,4,'0') AS reference,
+    count(mm.incident_id)::int AS members,count(mm.incident_id) FILTER(WHERE i.status<>'resolved' AND i.recovered_at IS NULL)::int AS unavailable,
+    EXISTS(SELECT 1 FROM major_incident_updates u WHERE u.major_incident_id=m.id) AS updated
+    FROM major_incidents m LEFT JOIN major_incident_members mm ON mm.major_incident_id=m.id LEFT JOIN incidents i ON i.id=mm.incident_id
+    WHERE m.id=$1 GROUP BY m.id`,[request.params.majorId]);
+    if(!major.rowCount){await client.query("ROLLBACK");return response.status(404).json({error:"Major incident not found"});}const item=major.rows[0];
+    if(!item.members){await client.query("ROLLBACK");return response.status(409).json({error:"Link at least one incident before resolving the major incident"});}
+    if(item.unavailable>0){await client.query("ROLLBACK");return response.status(409).json({error:"All linked incidents must be responding before they can be resolved"});}
+    if(!item.updated){await client.query("ROLLBACK");return response.status(409).json({error:"Add a major incident update before resolving all incidents"});}
+    await client.query(`INSERT INTO incident_updates(incident_id,user_id,body) SELECT i.id,$2,'Resolved through '||$3||': '||$4 FROM major_incident_members mm JOIN incidents i ON i.id=mm.incident_id WHERE mm.major_incident_id=$1 AND i.status<>'resolved'`,[request.params.majorId,response.locals.user.id,item.reference,item.title]);
+    const resolved=await client.query(`UPDATE incidents i SET status='resolved',resolved_at=now(),closed_by_user_id=$2 FROM major_incident_members mm WHERE mm.major_incident_id=$1 AND i.id=mm.incident_id AND i.status<>'resolved' RETURNING i.id`,[request.params.majorId,response.locals.user.id]);
+    await client.query("UPDATE major_incidents SET status='resolved',resolved_at=now() WHERE id=$1",[request.params.majorId]);await client.query("COMMIT");return response.json({resolvedIncidents:resolved.rowCount,majorIncidentResolved:true});
+  }catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}
+});
 
 app.get("/api/devices", async (_request, response) => {
   const result = await pool.query(`SELECT d.*, COALESCE(json_agg(c ORDER BY c.name) FILTER (WHERE c.id IS NOT NULL), '[]') AS checks

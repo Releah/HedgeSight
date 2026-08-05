@@ -26,6 +26,8 @@ Failures are correlated at device level. Multiple failed checks become signals w
 
 Related device incidents can be coordinated through a **Major Incident** with an `MI-YYYY-NNNN` reference, impact statement, severity, owner, linked incidents, and a shared timestamped update stream.
 
+The incident list groups linked incidents beneath an expandable MI workflow bar. Operators can post shared updates, open the full MI, or resolve every linked incident together. Bulk resolution requires all child incidents to have recovered and at least one shared MI update; HedgeSight adds an attributed audit update to each child before closing the children and MI transactionally.
+
 ## Device management and groups
 
 The **Devices** and **Monitoring** pages share a management toolbar. Devices can be searched by name, address, description, OS, vendor, model, or group and filtered simultaneously by state, operating system, and custom group.
