@@ -1,5 +1,6 @@
 import type { ProbeJob } from "@hedgesight/contracts";
 import { executeProbe } from "./probes.js";
+import { collectBackup,leaseBackup,submitBackup } from "./backups.js";
 
 const apiUrl = (process.env.HEDGESIGHT_API_URL ?? "http://localhost:8080").replace(/\/$/, "");
 const token = process.env.WORKER_TOKEN ?? "local-development-token";
@@ -37,6 +38,8 @@ async function submit(job: ProbeJob): Promise<void> {
 console.info(`HedgeSight worker ${workerName} (${version}) connecting to ${apiUrl}`);
 for (;;) {
   try {
+    const backup=await leaseBackup(apiUrl,token,workerName,version);
+    if(backup){const result=await collectBackup(backup);await submitBackup(apiUrl,token,backup,result);console.info(`backup ${backup.target}: ${result.success?"success":"failed"} — ${result.message}`);continue;}
     const job = await lease();
     if (job) await submit(job);
     else await new Promise((resolve) => setTimeout(resolve, pollInterval));

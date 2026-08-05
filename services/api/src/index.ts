@@ -8,6 +8,7 @@ import { databaseDescription, migrate, pool, saveDatabaseConnection, testAndPrep
 import { startScheduler } from "./scheduler.js";
 import { startStorageMaintenance } from "./maintenance.js";
 import { storageRouter } from "./storage.js";
+import { backupRouter } from "./backups.js";
 
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const port = Number(process.env.APP_PORT ?? 8080);
@@ -140,6 +141,7 @@ app.get("/api/public/status", async (_request, response) => {
 
 app.use("/api", requireUser);
 app.use("/api", storageRouter);
+app.use("/api", backupRouter);
 
 function requireAdmin(request: express.Request, response: express.Response): boolean {
   if (response.locals.user?.role === "admin") return true;
