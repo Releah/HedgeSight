@@ -108,6 +108,8 @@ docker compose -f compose.yaml -f compose.external-db.yaml up -d
 
 The target database must support PostgreSQL 14 or newer and permit the `pgcrypto` extension.
 
+For bind-mounted application data, set `PUID` and `PGID` to the numeric owner of the host or NFS-mounted directory. The application image changes to that identity at startup and verifies that `/data` is writable before launching.
+
 ## Add remote workers
 
 A worker only needs outbound HTTPS access to the application. Give it a unique `WORKER_NAME`, the shared enrollment token, and the application URL:

@@ -6,6 +6,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       DATABASE_CONFIG_FILE: /data/database-url
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       APP_PORT: "8080"
       WORKER_TOKEN: ${WORKER_TOKEN}
       HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-edge}

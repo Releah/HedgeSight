@@ -9,6 +9,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://hedgesight:change-me@postgres:5432/hedgesight}
+      PUID: ${PUID:-100}
+      PGID: ${PGID:-101}
       WORKER_TOKEN: ${WORKER_TOKEN:-local-development-token}
       HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-0.1.0-dev}
       UPDATE_CHANNEL: ${UPDATE_CHANNEL:-stable}
