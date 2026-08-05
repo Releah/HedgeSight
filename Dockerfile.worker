@@ -12,9 +12,10 @@ RUN pnpm --filter @hedgesight/contracts build && pnpm --filter @hedgesight/worke
 RUN pnpm --filter @hedgesight/worker deploy --prod --legacy /output/worker
 
 FROM node:24-alpine AS worker
+ARG HEDGESIGHT_VERSION=0.1.0-dev
 RUN apk add --no-cache iputils && addgroup -S hedgesight && adduser -S hedgesight -G hedgesight
 WORKDIR /worker
 COPY --from=build --chown=hedgesight:hedgesight /output/worker ./
-ENV NODE_ENV=production
+ENV NODE_ENV=production HEDGESIGHT_VERSION=${HEDGESIGHT_VERSION}
 USER hedgesight
 CMD ["node", "dist/index.js"]

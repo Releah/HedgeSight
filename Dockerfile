@@ -16,6 +16,7 @@ RUN pnpm --filter @hedgesight/contracts build && pnpm --filter @hedgesight/web b
 RUN pnpm --filter @hedgesight/api deploy --prod --legacy /output/api
 
 FROM node:24-alpine AS app
+ARG HEDGESIGHT_VERSION=0.1.0-dev
 RUN apk add --no-cache shadow su-exec && addgroup -S hedgesight && adduser -S hedgesight -G hedgesight && mkdir -p /data && chown hedgesight:hedgesight /data
 WORKDIR /app
 COPY --from=build --chown=hedgesight:hedgesight /output/api ./
@@ -23,7 +24,7 @@ COPY --from=build --chown=hedgesight:hedgesight /workspace/apps/web/dist ./apps/
 COPY --from=build --chown=hedgesight:hedgesight /workspace/migrations ./migrations
 COPY docker-entrypoint.sh /usr/local/bin/hedgesight-entrypoint
 RUN chmod 755 /usr/local/bin/hedgesight-entrypoint
-ENV NODE_ENV=production APP_PORT=8080 WEB_ROOT=apps/web/dist MIGRATIONS_DIR=migrations DATABASE_CONFIG_FILE=/data/database-url
+ENV NODE_ENV=production APP_PORT=8080 WEB_ROOT=apps/web/dist MIGRATIONS_DIR=migrations DATABASE_CONFIG_FILE=/data/database-url HEDGESIGHT_VERSION=${HEDGESIGHT_VERSION}
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/hedgesight-entrypoint"]
 CMD ["node", "dist/index.js"]

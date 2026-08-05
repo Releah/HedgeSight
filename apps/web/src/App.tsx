@@ -1106,6 +1106,21 @@ export function App() {
   );
 }
 
+export function VersionStamp() {
+  const [build, setBuild] = useState<{ version: string; channel: string } | null>(null);
+  useEffect(() => {
+    void fetch("/api/version")
+      .then(response => response.ok ? response.json() : null)
+      .then(value => value && setBuild(value))
+      .catch(() => undefined);
+  }, []);
+  if (!build) return null;
+  const version = build.version.startsWith("edge-")
+    ? `edge · ${build.version.slice(5, 12)}`
+    : build.version;
+  return <div className="version-stamp" title={`HedgeSight ${build.version} (${build.channel})`}>v{version}</div>;
+}
+
 export function PrivateApp({
   user,
   onLogout,
