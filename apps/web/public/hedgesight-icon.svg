@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">HedgeSight</title>
+  <desc id="desc">A luminous network radar eye representing infrastructure visibility.</desc>
+  <defs>
+    <linearGradient id="surface" x1="64" y1="40" x2="448" y2="472" gradientUnits="userSpaceOnUse"><stop stop-color="#10231e"/><stop offset="1" stop-color="#07110f"/></linearGradient>
+    <linearGradient id="signal" x1="154" y1="154" x2="366" y2="370" gradientUnits="userSpaceOnUse"><stop stop-color="#79f2c2"/><stop offset="1" stop-color="#41d69b"/></linearGradient>
+    <radialGradient id="beam" cx="0" cy="0" r="1" gradientTransform="translate(256 256) rotate(38) scale(164)" gradientUnits="userSpaceOnUse"><stop stop-color="#41d69b" stop-opacity=".42"/><stop offset="1" stop-color="#41d69b" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect x="18" y="18" width="476" height="476" rx="112" fill="url(#surface)"/>
+  <rect x="29" y="29" width="454" height="454" rx="101" fill="none" stroke="#29463d" stroke-width="6"/>
+  <path d="M72 256C119 169 184 124 256 124s137 45 184 132c-47 87-112 132-184 132S119 343 72 256Z" fill="#091814" stroke="url(#signal)" stroke-width="18" stroke-linejoin="round"/>
+  <circle cx="256" cy="256" r="96" fill="none" stroke="#2d725a" stroke-width="8"/>
+  <circle cx="256" cy="256" r="54" fill="none" stroke="#41d69b" stroke-width="10"/>
+  <path d="M256 256V158a98 98 0 0 1 76 36Z" fill="url(#beam)"/>
+  <path d="M256 256 327 193" fill="none" stroke="#79f2c2" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="18" fill="#79f2c2"/><circle cx="256" cy="256" r="7" fill="#07110f"/>
+  <circle cx="327" cy="193" r="13" fill="#41d69b" stroke="#07110f" stroke-width="6"/>
+  <circle cx="195" cy="303" r="11" fill="#41d69b" stroke="#07110f" stroke-width="6"/>
+  <circle cx="302" cy="322" r="9" fill="#41d69b" stroke="#07110f" stroke-width="6"/>
+</svg>

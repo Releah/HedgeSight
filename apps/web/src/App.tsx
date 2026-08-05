@@ -887,7 +887,7 @@ function PublicHealth() {
       <header className="public-nav">
         <div className="brand">
           <div className="brandmark">
-            <Radar size={24} />
+            <img src="/hedgesight-icon.svg" alt="" />
           </div>
           <span>
             Hedge<span>Sight</span>
@@ -994,7 +994,7 @@ function Login({
     <div className="login-shell">
       <section className="login-brand">
         <div className="brandmark">
-          <Radar size={29} />
+          <img src="/hedgesight-icon.svg" alt="" />
         </div>
         <p className="eyebrow">ACTIVE MONITORING</p>
         <h1>
@@ -1799,7 +1799,7 @@ export function PrivateApp({
       <aside className={mobileNav ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <div className="brandmark">
-            <Radar size={24} />
+            <img src="/hedgesight-icon.svg" alt="" />
           </div>
           <span>
             Hedge<span>Sight</span>
