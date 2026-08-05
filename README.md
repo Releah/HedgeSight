@@ -26,6 +26,8 @@ A failed check raises an **Open** incident. An operator can claim a currently do
 
 Incident detail records the outage, recovery, and closure timestamps alongside attributed, timestamped operator updates. An incident can only be marked **Resolved** after monitoring has recovered and at least one update has been added. Overview incident rows link directly to the corresponding incident detail.
 
+Incidents may be resolved with a linked follow-up task when service restoration must happen before root-cause work. The **Tasks** area provides a draggable Kanban board with Backlog, In progress, Testing, and Completed stages. Tasks support assignment, editable details, timestamped updates, and links to multiple incidents. Their priority marker escalates automatically as more incidents are linked, making recurring problems more visible.
+
 The Overview keeps active incidents visible and places resolved history in a collapsed section. Resolved incidents remain in the operational queue until an operator archives them. Archiving removes the incident from operational views without deleting it or excluding it from metrics.
 
 Failures are correlated at device level. Multiple failed checks become signals within the same device incident, and a recurrence shortly after closure reopens that incident. The default correlation window is five minutes and can be changed with `INCIDENT_CORRELATION_SECONDS`.

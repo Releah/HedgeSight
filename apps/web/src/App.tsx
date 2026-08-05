@@ -15,6 +15,7 @@ import {
   Box,
   ChevronDown,
   CircleGauge,
+  ClipboardList,
   Database,
   Eye,
   History,
@@ -41,6 +42,7 @@ type View =
   | "monitoring"
   | "devices"
   | "incidents"
+  | "tasks"
   | "workers"
   | "settings";
 type DeviceGroup = {
@@ -88,6 +90,9 @@ type MonitoringDevice = {
   uptimePercent: string | null;
 };
 type ChangeManager = { id:string;displayName:string;email:string };
+type TaskStatus="backlog"|"in_progress"|"testing"|"completed";
+type TaskRecord={id:string;title:string;description:string;status:TaskStatus;createdAt:string;updatedAt:string;assigneeId:string|null;assigneeName:string|null;incidentCount:number;updateCount:number};
+type TaskDetail=TaskRecord&{incidents:Array<{id:string;status:string;openedAt:string;deviceName:string}>;updates:Array<{id:string;body:string;createdAt:string;authorName:string}>};
 type InterfaceStats = {
   id: string;
   name: string;
@@ -253,6 +258,7 @@ const pageCopy: Record<
     title: "Incidents",
     description: "Review active outages and recently resolved checks.",
   },
+  tasks:{eyebrow:"FOLLOW-UP ACTIONS",title:"Tasks",description:"Track root-cause work and follow-up actions linked to incidents."},
   workers: {
     eyebrow: "POLLING",
     title: "Workers",
@@ -1120,6 +1126,12 @@ export function PrivateApp({
   const [selectedDevices,setSelectedDevices]=useState<string[]>([]);
   const [changeManagers,setChangeManagers]=useState<ChangeManager[]>([]);
   const [changeError,setChangeError]=useState("");
+  const [tasks,setTasks]=useState<TaskRecord[]>([]);
+  const [taskAssignees,setTaskAssignees]=useState<ChangeManager[]>([]);
+  const [selectedTask,setSelectedTask]=useState<TaskDetail|null>(null);
+  const [taskDialog,setTaskDialog]=useState(false);
+  const [incidentTaskDialog,setIncidentTaskDialog]=useState(false);
+  const [taskError,setTaskError]=useState("");
 
   async function refresh() {
     try {
@@ -1130,6 +1142,8 @@ export function PrivateApp({
         incidentsResponse,
         majorResponse,
         managersResponse,
+        tasksResponse,
+        assigneesResponse,
       ] = await Promise.all([
         fetch("/api/dashboard"),
         fetch("/api/monitoring"),
@@ -1137,6 +1151,7 @@ export function PrivateApp({
         fetch("/api/incidents"),
         fetch("/api/major-incidents"),
         fetch("/api/change-managers"),
+        fetch("/api/tasks"),fetch("/api/task-assignees"),
       ]);
       if (
         !dashboardResponse.ok ||
@@ -1144,7 +1159,7 @@ export function PrivateApp({
         !groupsResponse.ok ||
         !incidentsResponse.ok ||
         !majorResponse.ok
-        || !managersResponse.ok
+        || !managersResponse.ok || !tasksResponse.ok || !assigneesResponse.ok
       )
         throw new Error("Dashboard is unavailable");
       setSummary(await dashboardResponse.json());
@@ -1153,6 +1168,7 @@ export function PrivateApp({
       setIncidents(await incidentsResponse.json());
       setMajorIncidents(await majorResponse.json());
       setChangeManagers(await managersResponse.json());
+      setTasks(await tasksResponse.json());setTaskAssignees(await assigneesResponse.json());
       setError("");
     } catch (cause) {
       setError(
@@ -1276,6 +1292,13 @@ export function PrivateApp({
     if (response.ok) await reloadIncident();
     else setIncidentError((await response.json()).error);
   }
+  async function openTask(id:string){const response=await fetch(`/api/tasks/${id}`);if(response.ok){setSelectedTask(await response.json());setTaskError("");}}
+  async function createTask(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form);const response=await fetch("/api/tasks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),assigneeId:data.get("assigneeId")||null,incidentIds:data.getAll("incidentIds")})});if(response.ok){form.reset();setTaskDialog(false);await refresh();}else setTaskError((await response.json()).error??"Unable to create task");}
+  async function resolveWithTask(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedIncident)return;const form=event.currentTarget,data=new FormData(form);const resolved=await fetch(`/api/incidents/${selectedIncident.id}/resolve`,{method:"POST"});if(!resolved.ok){setIncidentError((await resolved.json()).error);return;}const created=await fetch("/api/tasks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),assigneeId:data.get("assigneeId")||null,incidentIds:[selectedIncident.id]})});if(created.ok){setIncidentTaskDialog(false);setSelectedIncident(null);await refresh();navigate("tasks");}else setIncidentError((await created.json()).error??"Incident resolved, but task creation failed");}
+  async function moveTask(id:string,status:TaskStatus){await fetch(`/api/tasks/${id}/status`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({status})});await refresh();}
+  async function saveTask(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const data=new FormData(event.currentTarget);const response=await fetch(`/api/tasks/${selectedTask.id}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),status:data.get("status"),assigneeId:data.get("assigneeId")||null})});if(response.ok){await refresh();await openTask(selectedTask.id);}}
+  async function addTaskUpdate(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const form=event.currentTarget,body=new FormData(form).get("body");if((await fetch(`/api/tasks/${selectedTask.id}/updates`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({body})})).ok){form.reset();await openTask(selectedTask.id);await refresh();}}
+  async function linkTaskIncidents(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const form=event.currentTarget,incidentIds=new FormData(form).getAll("incidentIds");if(!incidentIds.length)return;if((await fetch(`/api/tasks/${selectedTask.id}/incidents`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({incidentIds})})).ok){form.reset();await openTask(selectedTask.id);await refresh();}}
   async function archiveIncident(id: string) {
     const response = await fetch(`/api/incidents/${id}/archive`, {
       method: "POST",
@@ -1729,6 +1752,7 @@ export function PrivateApp({
             "Incidents",
             <span className="nav-count alert">{openIncidents}</span>,
           )}
+          {nav("tasks", <ClipboardList />, "Tasks", <span className="nav-count">{tasks.filter(item=>item.status!=="completed").length}</span>)}
           {nav("workers", <Box />, "Workers")}
         </nav>
         <div className="sidebar-bottom">
@@ -1768,6 +1792,7 @@ export function PrivateApp({
               <Plus size={17} /> Add device
             </button>
           )}
+          {view==="tasks"&&["admin","operator"].includes(user.role)&&<button className="primary" onClick={()=>setTaskDialog(true)}><Plus size={17}/> New task</button>}
         </header>
         {error && <div className="error">{error}. Retrying automatically.</div>}
         {view === "overview" && (
@@ -2373,6 +2398,7 @@ export function PrivateApp({
                         ? "Incident resolved"
                         : "Resolve incident"}
                     </button>
+                    {selectedIncident.status!=="resolved"&&<button className="secondary" onClick={()=>setIncidentTaskDialog(true)} disabled={!selectedIncident.recoveredAt||selectedIncident.updates.length===0}><ClipboardList size={15}/>Resolve & create task</button>}
                     {selectedIncident.status === "resolved" &&
                       !selectedIncident.archivedAt && (
                         <button
@@ -2611,6 +2637,11 @@ export function PrivateApp({
                 )}
               </>
             )}
+          </section>
+        )}
+        {view === "tasks" && (
+          <section className="task-board">
+            {(["backlog","in_progress","testing","completed"] as TaskStatus[]).map(status=><section className={`task-column ${status}`} key={status} onDragOver={event=>event.preventDefault()} onDrop={event=>{const id=event.dataTransfer.getData("text/task-id");if(id)void moveTask(id,status);}}><header><span className="task-column-dot"/><h2>{status==="in_progress"?"In progress":status[0].toUpperCase()+status.slice(1)}</h2><b>{tasks.filter(item=>item.status===status).length}</b></header><div>{tasks.filter(item=>item.status===status).map(task=><article className="task-card" key={task.id} draggable={["admin","operator"].includes(user.role)} onDragStart={event=>event.dataTransfer.setData("text/task-id",task.id)} onClick={()=>void openTask(task.id)}><div className="task-priority"><i className={task.incidentCount>=5?"critical":task.incidentCount>=3?"high":task.incidentCount>=2?"medium":"normal"}/><span>{task.incidentCount} incident{task.incidentCount===1?"":"s"}</span></div><h3>{task.title}</h3><p>{task.description||"No description added."}</p><footer><span>{task.assigneeName||"Unassigned"}</span><small>{task.updateCount} updates</small></footer></article>)}</div></section>)}
           </section>
         )}
         {view === "workers" && (
@@ -3392,6 +3423,9 @@ export function PrivateApp({
           </section>
         </div>
       )}
+      {taskDialog&&<div className="modal-backdrop" onMouseDown={()=>setTaskDialog(false)}><section className="modal task-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setTaskDialog(false)}><X/></button><p className="eyebrow">FOLLOW-UP ACTION</p><h2>Create task</h2><form onSubmit={createTask}><label>Title<input name="title" required autoFocus maxLength={200}/></label><label>Description<textarea name="description" rows={4} maxLength={4000}/></label><label>Assignee<select name="assigneeId"><option value="">Unassigned</option>{taskAssignees.map(item=><option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><fieldset className="task-incident-picker"><legend>Link incidents</legend>{incidents.map(item=><label key={item.id}><input type="checkbox" name="incidentIds" value={item.id}/><span>{item.deviceName}<small>{incidentStatus(item.status)} · {relativeTime(item.openedAt)}</small></span></label>)}</fieldset>{taskError&&<div className="form-error">{taskError}</div>}<div className="modal-actions"><button type="button" className="secondary" onClick={()=>setTaskDialog(false)}>Cancel</button><button className="primary">Create task</button></div></form></section></div>}
+      {incidentTaskDialog&&selectedIncident&&<div className="modal-backdrop" onMouseDown={()=>setIncidentTaskDialog(false)}><section className="modal task-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setIncidentTaskDialog(false)}><X/></button><p className="eyebrow">RESOLVE WITH FOLLOW-UP</p><h2>Create root-cause task</h2><p>The incident will close and remain linked to this backlog task.</p><form onSubmit={resolveWithTask}><label>Task title<input name="title" required autoFocus defaultValue={`${selectedIncident.deviceName}: root-cause follow-up`}/></label><label>Description<textarea name="description" rows={4} defaultValue={`Investigate the root cause of the ${selectedIncident.checkName} outage opened ${new Date(selectedIncident.openedAt).toLocaleString()}.`}/></label><label>Assignee<select name="assigneeId"><option value="">Unassigned</option>{taskAssignees.map(item=><option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setIncidentTaskDialog(false)}>Cancel</button><button className="primary">Resolve & create task</button></div></form></section></div>}
+      {selectedTask&&<div className="modal-backdrop" onMouseDown={()=>setSelectedTask(null)}><section className="modal wide-modal task-detail-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setSelectedTask(null)}><X/></button><p className="eyebrow">TASK DETAIL · {selectedTask.incidents.length} LINKED INCIDENTS</p><form className="task-edit-form" onSubmit={saveTask}><label>Title<input name="title" defaultValue={selectedTask.title} required/></label><label>Description<textarea name="description" rows={4} defaultValue={selectedTask.description}/></label><div className="task-fields"><label>Status<select name="status" defaultValue={selectedTask.status}><option value="backlog">Backlog</option><option value="in_progress">In progress</option><option value="testing">Testing</option><option value="completed">Completed</option></select></label><label>Assignee<select name="assigneeId" defaultValue={selectedTask.assigneeId??""}><option value="">Unassigned</option>{taskAssignees.map(item=><option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label></div><button className="primary">Save task</button></form><div className="task-detail-grid"><section><h3>Updates</h3><div className="task-updates">{selectedTask.updates.map(item=><article key={item.id}><strong>{item.authorName}</strong><time>{new Date(item.createdAt).toLocaleString()}</time><p>{item.body}</p></article>)}</div><form className="task-update-form" onSubmit={addTaskUpdate}><textarea name="body" required rows={3} placeholder="Add investigation notes or progress…"/><button className="primary">Post update</button></form></section><aside><h3>Linked incidents</h3>{selectedTask.incidents.map(item=><button key={item.id} className="linked-incident" onClick={()=>void openIncident(item.id)}><span>{item.deviceName}</span><small>{incidentStatus(item.status)}</small></button>)}<form className="link-incidents-form" onSubmit={linkTaskIncidents}><fieldset className="task-incident-picker"><legend>Add incidents</legend>{incidents.filter(item=>!selectedTask.incidents.some(link=>link.id===item.id)).map(item=><label key={item.id}><input type="checkbox" name="incidentIds" value={item.id}/><span>{item.deviceName}</span></label>)}</fieldset><button className="secondary">Link selected</button></form></aside></div></section></div>}
       {changeDialog && (
         <div className="modal-backdrop" onMouseDown={()=>setChangeDialog(false)}>
           <section className="modal change-modal" role="dialog" aria-modal="true" aria-labelledby="change-title" onMouseDown={event=>event.stopPropagation()}>
