@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  app:
+    image: ${HEDGESIGHT_APP_IMAGE:-ghcr.io/releah/hedgesight-app:edge}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_CONFIG_FILE: /data/database-url
+      APP_PORT: "8080"
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-edge}
+      UPDATE_CHANNEL: ${UPDATE_CHANNEL:-edge}
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY}
+      SESSION_DAYS: ${SESSION_DAYS:-7}
+      INCIDENT_CORRELATION_SECONDS: ${INCIDENT_CORRELATION_SECONDS:-300}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+    ports:
+      - target: 8080
+        published: ${APP_PORT:-8080}
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - hedgesight-app-data:/data
+    networks:
+      - hedgesight
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 60s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 45s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+        monitor: 45s
+      resources:
+        reservations:
+          memory: ${APP_MEMORY_RESERVATION:-256M}
+        limits:
+          memory: ${APP_MEMORY_LIMIT:-1G}
+
+  worker:
+    image: ${HEDGESIGHT_WORKER_IMAGE:-ghcr.io/releah/hedgesight-worker:edge}
+    environment:
+      HEDGESIGHT_API_URL: http://app:8080
+      WORKER_NAME: "${WORKER_NAME_PREFIX:-swarm-worker}-{{.Task.Slot}}"
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-edge}
+      JOB_POLL_INTERVAL_MS: ${JOB_POLL_INTERVAL_MS:-3000}
+      JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-45}
+    cap_add:
+      - NET_RAW
+    networks:
+      - hedgesight
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 60s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+        monitor: 30s
+      resources:
+        reservations:
+          memory: ${WORKER_MEMORY_RESERVATION:-128M}
+        limits:
+          memory: ${WORKER_MEMORY_LIMIT:-512M}
+
+networks:
+  hedgesight:
+    driver: overlay
+    attachable: true
+
+volumes:
+  hedgesight-app-data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER},rw,nfsvers=${NFS_VERSION:-4}
+      device: :${NFS_APP_DATA_PATH}
