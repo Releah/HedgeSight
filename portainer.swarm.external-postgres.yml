@@ -25,7 +25,9 @@ services:
         protocol: tcp
         mode: ingress
     volumes:
-      - hedgesight-app-data:/data
+      - type: bind
+        source: ${HEDGESIGHT_DATA_PATH:-/mnt/hedgesight/app-data}
+        target: /data
     networks:
       - hedgesight
     healthcheck:
@@ -95,11 +97,3 @@ networks:
   hedgesight:
     driver: overlay
     attachable: true
-
-volumes:
-  hedgesight-app-data:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: addr=${NFS_SERVER},rw,nfsvers=${NFS_VERSION:-4}
-      device: :${NFS_APP_DATA_PATH}
