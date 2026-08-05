@@ -1,0 +1,78 @@
+name: hedgesight
+
+services:
+  app:
+    image: ${HEDGESIGHT_APP_IMAGE:-ghcr.io/releah/hedgesight-app:edge}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_CONFIG_FILE: /data/database-url
+      APP_PORT: "8080"
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-edge}
+      UPDATE_CHANNEL: ${UPDATE_CHANNEL:-edge}
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY}
+      SESSION_DAYS: ${SESSION_DAYS:-7}
+      INCIDENT_CORRELATION_SECONDS: ${INCIDENT_CORRELATION_SECONDS:-300}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+    ports:
+      - ${APP_PORT:-8080}:8080
+    volumes:
+      - hedgesight-app-data:/data
+    networks:
+      - hedgesight
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: hedgesight
+
+  worker:
+    image: ${HEDGESIGHT_WORKER_IMAGE:-ghcr.io/releah/hedgesight-worker:edge}
+    restart: unless-stopped
+    environment:
+      HEDGESIGHT_API_URL: http://app:8080
+      WORKER_NAME: ${WORKER_NAME:-portainer-worker}
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-edge}
+      JOB_POLL_INTERVAL_MS: ${JOB_POLL_INTERVAL_MS:-3000}
+      JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-45}
+    cap_add:
+      - NET_RAW
+    networks:
+      - hedgesight
+    depends_on:
+      app:
+        condition: service_healthy
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: hedgesight
+
+  updater:
+    image: containrrr/watchtower:1.7.1
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_SCOPE: hedgesight
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: ${UPDATE_POLL_INTERVAL:-3600}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      com.centurylinklabs.watchtower.scope: hedgesight
+
+networks:
+  hedgesight:
+    driver: bridge
+
+volumes:
+  hedgesight-app-data:
