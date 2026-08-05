@@ -1,0 +1,74 @@
+name: hedgesight
+
+services:
+  app:
+    image: ${HEDGESIGHT_APP_IMAGE:-ghcr.io/releah/hedgesight-app:edge}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://hedgesight:change-me@postgres:5432/hedgesight}
+      WORKER_TOKEN: ${WORKER_TOKEN:-local-development-token}
+      HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-0.1.0-dev}
+      UPDATE_CHANNEL: ${UPDATE_CHANNEL:-stable}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  worker:
+    image: ${HEDGESIGHT_WORKER_IMAGE:-ghcr.io/releah/hedgesight-worker:edge}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    environment:
+      HEDGESIGHT_API_URL: http://app:8080
+      WORKER_NAME: ${WORKER_NAME:-local-worker}
+      WORKER_TOKEN: ${WORKER_TOKEN:-local-development-token}
+      HEDGESIGHT_VERSION: ${HEDGESIGHT_VERSION:-0.1.0-dev}
+    depends_on:
+      app:
+        condition: service_healthy
+    cap_add:
+      - NET_RAW
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hedgesight}
+      POSTGRES_USER: ${POSTGRES_USER:-hedgesight}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  updater:
+    image: containrrr/watchtower:1.7.1
+    profiles: ["auto-update"]
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: ${UPDATE_POLL_INTERVAL:-3600}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  postgres-data:

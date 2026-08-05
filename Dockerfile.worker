@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+FROM node:24-alpine AS build
+RUN corepack enable
+WORKDIR /workspace
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* tsconfig.base.json ./
+COPY services/worker/package.json services/worker/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+RUN pnpm install --frozen-lockfile=false
+COPY services/worker services/worker
+COPY packages/contracts packages/contracts
+RUN pnpm --filter @hedgesight/contracts build && pnpm --filter @hedgesight/worker build
+RUN pnpm --filter @hedgesight/worker deploy --prod --legacy /output/worker
+
+FROM node:24-alpine AS worker
+RUN apk add --no-cache iputils && addgroup -S hedgesight && adduser -S hedgesight -G hedgesight
+WORKDIR /worker
+COPY --from=build --chown=hedgesight:hedgesight /output/worker ./
+ENV NODE_ENV=production
+USER hedgesight
+CMD ["node", "dist/index.js"]
