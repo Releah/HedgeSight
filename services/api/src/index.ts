@@ -215,6 +215,7 @@ app.get("/api/dashboard", async (_request, response) => {
       i.opened_at AS "openedAt", i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",u.display_name AS "investigatorName"
       FROM incidents i JOIN checks c ON c.id = i.check_id JOIN devices d ON d.id = c.device_id
       LEFT JOIN users u ON u.id=i.investigating_user_id
+      WHERE i.archived_at IS NULL
       ORDER BY i.opened_at DESC LIMIT 10`),
   ]);
   const summary = { up: 0, down: 0, degraded: 0, unknown: 0 };
@@ -223,7 +224,7 @@ app.get("/api/dashboard", async (_request, response) => {
 });
 
 app.get("/api/incidents",async(_request,response)=>{
-  const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",
+  const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",i.archived_at AS "archivedAt",
     d.id AS "deviceId",d.name AS "deviceName",d.address,d.status AS "deviceStatus",c.name AS "checkName",c.kind AS "checkKind",
     u.display_name AS "investigatorName",(SELECT count(*)::int FROM incident_updates x WHERE x.incident_id=i.id) AS "updateCount",
     m.id AS "majorIncidentId",CASE WHEN m.id IS NULL THEN NULL ELSE 'MI-'||to_char(m.opened_at,'YYYY')||'-'||lpad(m.number::text,4,'0') END AS "majorIncidentReference",
@@ -235,7 +236,7 @@ app.get("/api/incidents",async(_request,response)=>{
 });
 
 app.get("/api/incidents/:incidentId",async(request,response)=>{
-  const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",
+  const result=await pool.query(`SELECT i.id,i.status,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",i.archived_at AS "archivedAt",
     d.id AS "deviceId",d.name AS "deviceName",d.address,d.description AS "deviceDescription",d.status AS "deviceStatus",
     c.name AS "checkName",c.kind AS "checkKind",c.last_status AS "checkStatus",opening.message AS "openingMessage",
     investigator.id AS "investigatorId",investigator.display_name AS "investigatorName",closer.display_name AS "closedByName"
@@ -273,6 +274,7 @@ app.post("/api/incidents/:incidentId/resolve",async(request,response)=>{
   if(!result.rowCount)return response.status(409).json({error:"The node must be responding and the incident must have at least one update before it can be resolved"});
   return response.json({resolved:true});
 });
+app.post("/api/incidents/:incidentId/archive",async(request,response)=>{const result=await pool.query(`UPDATE incidents SET archived_at=now(),archived_by_user_id=$2 WHERE id=$1 AND status='resolved' AND archived_at IS NULL RETURNING id`,[request.params.incidentId,response.locals.user.id]);if(!result.rowCount)return response.status(409).json({error:"Only a resolved, unarchived incident can be archived"});return response.json({archived:true});});
 
 app.get("/api/major-incidents",async(_request,response)=>{
   const result=await pool.query(`SELECT m.id,m.number,'MI-'||to_char(m.opened_at,'YYYY')||'-'||lpad(m.number::text,4,'0') AS reference,

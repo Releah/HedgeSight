@@ -20,7 +20,7 @@ A failed check raises an **Open** incident. An operator can claim a currently do
 
 Incident detail records the outage, recovery, and closure timestamps alongside attributed, timestamped operator updates. An incident can only be marked **Resolved** after monitoring has recovered and at least one update has been added. Overview incident rows link directly to the corresponding incident detail.
 
-The Overview keeps active incidents visible and places resolved history in a collapsed section. The Incidents page includes a scrollable 30-day activity timeline; selecting a count marker filters the incident table to that day.
+The Overview keeps active incidents visible and places resolved history in a collapsed section. Resolved incidents remain in the operational queue until an operator archives them. Archiving removes the incident from operational views without deleting it or excluding it from metrics.
 
 Failures are correlated at device level. Multiple failed checks become signals within the same device incident, and a recurrence shortly after closure reopens that incident. The default correlation window is five minutes and can be changed with `INCIDENT_CORRELATION_SECONDS`.
 
@@ -28,7 +28,7 @@ Related device incidents can be coordinated through a **Major Incident** with an
 
 The incident list groups linked incidents beneath an expandable MI workflow bar. Operators can post shared updates, open the full MI, or resolve every linked incident together. Bulk resolution requires all child incidents to have recovered and at least one shared MI update; HedgeSight adds an attributed audit update to each child before closing the children and MI transactionally.
 
-The Incidents screen is divided into **Operational incidents**, **Major incidents**, and **Metrics** tabs. Major Incident creation is launched from a compact button and completed in a modal, keeping the operational queue focused while leaving room for future incident analytics.
+The Incidents screen is divided into **Operational incidents**, **Major incidents**, **History**, and **Metrics** tabs. History contains archived incidents and the scrollable 30-day activity timeline; selecting a count marker filters history to that day. Existing resolved incidents are archived automatically when this schema change is first applied. Major Incident creation is launched from a compact button and completed in a modal, keeping the operational queue focused while leaving room for future incident analytics.
 
 ## Device management and groups
 
