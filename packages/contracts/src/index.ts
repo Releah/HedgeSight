@@ -97,6 +97,8 @@ export interface DashboardSummary {
     managerId: string;
     managerName: string;
     startedAt: string;
+    estimatedEndAt: string;
+    status: "scheduled" | "active" | "overdue";
     deviceCount: number;
     deviceNames: string[];
   }>;

@@ -79,6 +79,8 @@ type MonitoringDevice = {
   changeReference: string | null;
   changeManagerName: string | null;
   maintenanceStartedAt: string | null;
+  maintenanceEstimatedEndAt: string | null;
+  changeStatus: "scheduled"|"active"|"overdue"|null;
   uptimeSeconds: string | null;
   downtimeSeconds: string | null;
   uptimePercent: string | null;
@@ -278,6 +280,13 @@ function availabilityDuration(value:string|null):string{
   const days=Math.floor(seconds/86400),hours=Math.floor((seconds%86400)/3600),minutes=Math.floor((seconds%3600)/60);
   return days?`${days}d ${hours}h`:hours?`${hours}h ${minutes}m`:`${minutes}m`;
 }
+
+function dateTimeLocalValue(offsetMinutes=0):string{
+  const date=new Date(Date.now()+offsetMinutes*60_000-dateTimezoneOffset()*60_000);
+  return date.toISOString().slice(0,16);
+}
+
+function dateTimezoneOffset():number{return new Date().getTimezoneOffset();}
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`badge ${status}`}>
@@ -805,6 +814,7 @@ type PublicStatus = {
     total: number;
   };
   activeIncidents: number;
+  changes:Array<{changeReference:string;startedAt:string;estimatedEndAt:string;status:"scheduled"|"active";deviceCount:number}>;
   lastUpdated: string;
 };
 
@@ -887,6 +897,10 @@ function PublicHealth() {
               <small>ACTIVE INCIDENTS</small>
             </article>
           </div>
+          <section className="public-changes">
+            <div><p className="eyebrow">CHANGE CALENDAR</p><h2>Scheduled maintenance</h2><span>Change windows that may affect monitored availability.</span></div>
+            {status?.changes.length?status.changes.map(change=><article key={`${change.changeReference}-${change.startedAt}`}><span className={`change-icon ${change.status}`}><Wrench size={16}/></span><div><strong>{change.changeReference}</strong><small>{change.deviceCount} monitored node{change.deviceCount===1?"":"s"} · {change.status}</small></div><time><b>{new Date(change.startedAt).toLocaleString()}</b><span>to {new Date(change.estimatedEndAt).toLocaleString()}</span></time></article>):<div className="public-change-empty"><ShieldCheck size={18}/> No maintenance is currently scheduled.</div>}
+          </section>
         </section>
       </main>
     </div>
@@ -1276,7 +1290,7 @@ export function PrivateApp({
   function openChangeDialog(deviceIds:string[]){setSelectedDevices(deviceIds);setChangeError("");setChangeDialog(true);}
   async function createChange(event:FormEvent<HTMLFormElement>){
     event.preventDefault();const form=event.currentTarget,data=new FormData(form);
-    const response=await fetch("/api/changes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({changeReference:data.get("changeReference"),managerId:data.get("managerId"),deviceIds:selectedDevices})});
+    const response=await fetch("/api/changes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({changeReference:data.get("changeReference"),managerId:data.get("managerId"),deviceIds:selectedDevices,startedAt:new Date(String(data.get("startedAt"))).toISOString(),estimatedEndAt:new Date(String(data.get("estimatedEndAt"))).toISOString()})});
     if(response.ok){form.reset();setChangeDialog(false);setSelectedDevices([]);await refresh();}
     else setChangeError((await response.json()).error??"Unable to start change");
   }
@@ -1795,12 +1809,12 @@ export function PrivateApp({
             </section>
             <section className="grid">
               <Panel
-                title="Active changes"
-                subtitle="Nodes protected from outage alerting"
+                title="Change schedule"
+                subtitle="Scheduled and active maintenance windows"
                 className="devices"
               >
                 <div className="active-change-list">
-                  {summary.activeChanges.length?summary.activeChanges.map(change=><article key={change.id}><span className="change-icon"><Wrench size={16}/></span><div><strong>{change.changeReference}</strong><small>{change.deviceNames.join(", ")}</small><small>{change.managerName} · started {relativeTime(change.startedAt)}</small></div><button className="change-return" disabled={user.role!=="admin"&&change.managerId!==user.id} title={user.role!=="admin"&&change.managerId!==user.id?`Assigned to ${change.managerName}`:"Return nodes to normal monitoring"} onClick={()=>void returnChange(change.id)}>Return to service</button></article>):<div className="change-empty"><ShieldCheck size={20}/><strong>No active changes</strong><span>All nodes are under normal alerting.</span></div>}
+                  {summary.activeChanges.length?summary.activeChanges.map(change=><article key={change.id}><span className={`change-icon ${change.status}`}><Wrench size={16}/></span><div><strong>{change.changeReference} <em className={`change-state ${change.status}`}>{change.status}</em></strong><small>{change.deviceNames.join(", ")}</small><small>{change.managerName} · {new Date(change.startedAt).toLocaleString()} → {new Date(change.estimatedEndAt).toLocaleString()}</small></div><button className="change-return" disabled={user.role!=="admin"&&change.managerId!==user.id} title={user.role!=="admin"&&change.managerId!==user.id?`Assigned to ${change.managerName}`:"End this change"} onClick={()=>void returnChange(change.id)}>{change.status==="scheduled"?"Cancel change":"Return to service"}</button></article>):<div className="change-empty"><ShieldCheck size={20}/><strong>No scheduled or active changes</strong><span>All nodes are under normal alerting.</span></div>}
                 </div>
               </Panel>
               <Panel
@@ -1894,13 +1908,13 @@ export function PrivateApp({
                               <StatusBadge
                                 status={
                                   device.changeId
-                                    ? "maintenance"
+                                    ? device.changeStatus==="scheduled"?"scheduled":"maintenance"
                                     : device.enabled
                                     ? (device.pingStatus ?? "unknown")
                                     : "disabled"
                                 }
                               />
-                              {device.changeId&&<small className="maintenance-detail">{device.changeReference} · {device.changeManagerName}</small>}
+                              {device.changeId&&<small className="maintenance-detail">{device.changeReference} · {device.changeManagerName}<br/>{new Date(device.maintenanceStartedAt!).toLocaleString()} → {new Date(device.maintenanceEstimatedEndAt!).toLocaleString()}</small>}
                             </td>
                             <td>
                               <div className="row-actions">
@@ -3385,6 +3399,7 @@ export function PrivateApp({
             <form onSubmit={createChange}>
               <label>Change record<input name="changeReference" required autoFocus maxLength={200} placeholder="CHG0001234 — Core switch upgrade"/></label>
               <label>Change manager<select name="managerId" required defaultValue={user.id}>{changeManagers.map(manager=><option key={manager.id} value={manager.id}>{manager.displayName} · {manager.email}</option>)}</select></label>
+              <div className="change-window-fields"><label>Start time<input name="startedAt" type="datetime-local" required defaultValue={dateTimeLocalValue()}/></label><label>Estimated end time<input name="estimatedEndAt" type="datetime-local" required defaultValue={dateTimeLocalValue(120)}/></label></div>
               <div className="change-node-list">{selectedDevices.map(id=>{const device=monitoring.find(item=>item.id===id);return device?<span key={id}><Server size={13}/>{device.name}<small>{device.address}</small></span>:null})}</div>
               {changeError&&<div className="form-error">{changeError}</div>}
               <div className="modal-actions"><button type="button" className="secondary" onClick={()=>setChangeDialog(false)}>Cancel</button><button className="primary"><Wrench size={15}/> Start maintenance</button></div>

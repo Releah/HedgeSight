@@ -16,9 +16,9 @@ Monitoring rows expand to show 30-day uptime, downtime, availability percentage,
 
 ## Change management and maintenance
 
-Operators can select one or more nodes on the **Monitoring** page and place them under an immediate change record. Each change requires a reference and an assigned operator or administrator who becomes the change manager responsible for returning the nodes to service.
+Operators can select one or more nodes on the **Monitoring** page and place them under a scheduled change record. Each change requires a reference, start time, estimated end time, and an assigned operator or administrator who becomes the change manager responsible for returning the nodes to service. Future changes are visible as scheduled but do not suppress alerts before their start time; the estimated end is displayed for planning while return to service remains an explicit manager action.
 
-Polling and metric collection continue during maintenance, but down results do not raise new incidents and maintained nodes are excluded from outage counts. The Monitoring page shows the active change and manager on each protected node, while the Overview replaces the generic infrastructure panel with active changes and return-to-service controls. Only the assigned manager or an administrator can end a change.
+Polling and metric collection continue during maintenance, but down results do not raise new incidents and maintained nodes are excluded from outage counts. The Monitoring page shows the change window and manager on each protected node, while the Overview replaces the generic infrastructure panel with the change schedule and return-to-service controls. Only the assigned manager or an administrator can end a change. The unauthenticated status page publishes the change reference, scheduled window, state, and affected node count without exposing node or manager identities.
 
 ## Incident workflow
 
