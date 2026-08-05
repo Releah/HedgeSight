@@ -17,6 +17,7 @@ import {
   CircleGauge,
   Database,
   Eye,
+  History,
   KeyRound,
   LogOut,
   Menu,
@@ -78,6 +79,9 @@ type MonitoringDevice = {
   changeReference: string | null;
   changeManagerName: string | null;
   maintenanceStartedAt: string | null;
+  uptimeSeconds: string | null;
+  downtimeSeconds: string | null;
+  uptimePercent: string | null;
 };
 type ChangeManager = { id:string;displayName:string;email:string };
 type InterfaceStats = {
@@ -266,6 +270,13 @@ function relativeTime(value: string | null): string {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function availabilityDuration(value:string|null):string{
+  const seconds=Math.max(0,Number(value??0));
+  if(seconds<60)return `${Math.round(seconds)}s`;
+  const days=Math.floor(seconds/86400),hours=Math.floor((seconds%86400)/3600),minutes=Math.floor((seconds%3600)/60);
+  return days?`${days}d ${hours}h`:hours?`${hours}h ${minutes}m`:`${minutes}m`;
 }
 function StatusBadge({ status }: { status: string }) {
   return (
@@ -1081,6 +1092,7 @@ export function PrivateApp({
     end: Date;
     label: string;
   } | null>(null);
+  const [incidentDeviceFilter,setIncidentDeviceFilter]=useState<{id:string;name:string}|null>(null);
   const [majorIncidents, setMajorIncidents] = useState<MajorIncident[]>([]);
   const [selectedMajor, setSelectedMajor] =
     useState<MajorIncidentDetail | null>(null);
@@ -1195,6 +1207,9 @@ export function PrivateApp({
     setOsFilter("all");
     setGroupFilter("all");
     navigate("devices");
+  }
+  function openDeviceIncidentHistory(device:MonitoringDevice){
+    setIncidentDeviceFilter({id:device.id,name:device.name});setIncidentWindow(null);setIncidentSectionTab("history");setSelectedIncident(null);setSelectedMajor(null);navigate("incidents");
   }
   async function openIncident(id: string) {
     const response = await fetch(`/api/incidents/${id}`);
@@ -1571,6 +1586,7 @@ export function PrivateApp({
   });
   const operationalIncidents = incidents.filter((item) => !item.archivedAt),
     archivedIncidents = incidents.filter((item) => Boolean(item.archivedAt));
+  const deviceHistory=incidentDeviceFilter?archivedIncidents.filter(item=>item.deviceId===incidentDeviceFilter.id):archivedIncidents;
   const visibleIncidents = incidentWindow
     ? operationalIncidents.filter((item) => {
         const value = new Date(item.openedAt);
@@ -1578,11 +1594,11 @@ export function PrivateApp({
       })
     : operationalIncidents;
   const visibleHistory = incidentWindow
-    ? archivedIncidents.filter((item) => {
+    ? deviceHistory.filter((item) => {
         const value = new Date(item.openedAt);
         return value >= incidentWindow.start && value < incidentWindow.end;
       })
-    : archivedIncidents;
+    : deviceHistory;
   const nav = (
     next: View,
     icon: ReactNode,
@@ -1889,6 +1905,7 @@ export function PrivateApp({
                             <td>
                               <div className="row-actions">
                                 {!device.changeId&&["admin","operator"].includes(user.role)&&<button className="device-jump maintenance-node" onClick={()=>openChangeDialog([device.id])} title="Put under change" aria-label={`Put ${device.name} under change`}><Wrench size={15}/></button>}
+                                <button className="device-jump history-node" onClick={()=>openDeviceIncidentHistory(device)} title="Open incident history" aria-label={`Open incident history for ${device.name}`}><History size={15}/></button>
                                 <button
                                   className="device-jump"
                                   onClick={() => openDevice(device)}
@@ -1912,6 +1929,12 @@ export function PrivateApp({
                           {expandedDevice === device.id && (
                             <tr className="interface-detail">
                               <td colSpan={7}>
+                                <section className="availability-strip" aria-label={`30 day availability for ${device.name}`}>
+                                  <div><small>UPTIME · 30 DAYS</small><strong>{availabilityDuration(device.uptimeSeconds)}</strong></div>
+                                  <div><small>DOWNTIME · 30 DAYS</small><strong className="downtime-value">{availabilityDuration(device.downtimeSeconds)}</strong></div>
+                                  <div><small>AVAILABILITY</small><strong>{device.uptimePercent===null?"—":`${Number(device.uptimePercent).toFixed(3)}%`}</strong></div>
+                                  <span>Calculated from recorded UP and DOWN probe durations; unknown time is excluded.</span>
+                                </section>
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
                                     Loading interfaces…
@@ -2520,8 +2543,9 @@ export function PrivateApp({
                 )}
                 {incidentSectionTab === "history" && (
                   <>
+                    {incidentDeviceFilter&&<div className="device-history-filter"><span><History size={15}/> Incident history for <strong>{incidentDeviceFilter.name}</strong></span><button onClick={()=>setIncidentDeviceFilter(null)}>Show all devices</button></div>}
                     <IncidentTimeline
-                      incidents={archivedIncidents}
+                      incidents={deviceHistory}
                       onSelect={(start, end, label) =>
                         setIncidentWindow({ start, end, label })
                       }

@@ -12,7 +12,7 @@ Ping results record availability, response time, and packet loss. The **Monitori
 
 Reachability can use either ICMP echo or a TCP connection to a configurable port (port 22 by default). Both methods use the same scheduling, latency history, state transitions, and incident handling.
 
-Monitoring rows expand to show the latest interface traffic, utilization, errors, and discards, refreshing every 10 seconds. Until SNMP discovery has populated interface telemetry, the expanded view explains that no interface data is available. Device configuration and profile management remain on the separate **Devices** page.
+Monitoring rows expand to show 30-day uptime, downtime, availability percentage, and the latest interface traffic, utilization, errors, and discards, refreshing every 10 seconds. Availability is calculated from recorded UP and DOWN probe durations, with unknown time excluded. Until SNMP discovery has populated interface telemetry, the expanded view explains that no interface data is available. Each monitoring row also links directly to the incident History tab filtered to that device. Device configuration and profile management remain on the separate **Devices** page.
 
 ## Change management and maintenance
 

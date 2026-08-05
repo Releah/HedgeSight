@@ -340,12 +340,18 @@ app.get("/api/monitoring", async (_request, response) => {
     COALESCE(p.config->>'mode','icmp') AS "reachabilityMode",COALESCE((p.config->>'port')::integer,22) AS "tcpPort",
     latest.latency_ms AS "latencyMs",COALESCE((latest.metrics->>'packetLossPercent')::double precision,0) AS "packetLossPercent",
     COALESCE(history.points,'[]'::json) AS history,COALESCE(groups.items,'[]'::json) AS groups,d.enabled,
-    maintenance.id AS "changeId",maintenance.change_reference AS "changeReference",maintenance.manager_name AS "changeManagerName",maintenance.started_at AS "maintenanceStartedAt"
+    maintenance.id AS "changeId",maintenance.change_reference AS "changeReference",maintenance.manager_name AS "changeManagerName",maintenance.started_at AS "maintenanceStartedAt",
+    availability.uptime_seconds AS "uptimeSeconds",availability.downtime_seconds AS "downtimeSeconds",availability.uptime_percent AS "uptimePercent"
     FROM devices d
     LEFT JOIN LATERAL (SELECT * FROM checks WHERE device_id=d.id AND kind='ping' ORDER BY created_at LIMIT 1) p ON true
     LEFT JOIN LATERAL (SELECT latency_ms,metrics FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 1) latest ON true
     LEFT JOIN LATERAL (SELECT json_agg(json_build_object('timestamp',x.finished_at,'latencyMs',x.latency_ms,'status',x.status) ORDER BY x.finished_at) AS points
       FROM (SELECT finished_at,latency_ms,status FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 30) x) history ON true
+    LEFT JOIN LATERAL (SELECT round(COALESCE(sum(seconds) FILTER(WHERE status='up'),0))::bigint AS uptime_seconds,
+      round(COALESCE(sum(seconds) FILTER(WHERE status='down'),0))::bigint AS downtime_seconds,
+      CASE WHEN COALESCE(sum(seconds) FILTER(WHERE status IN ('up','down')),0)>0 THEN round((100*COALESCE(sum(seconds) FILTER(WHERE status='up'),0)/sum(seconds) FILTER(WHERE status IN ('up','down')))::numeric,3) ELSE NULL END AS uptime_percent
+      FROM (SELECT status,extract(epoch FROM LEAST(COALESCE(lead(finished_at) OVER(ORDER BY finished_at),now()),now())-GREATEST(finished_at,now()-interval '30 days')) AS seconds
+        FROM probe_results WHERE check_id=p.id AND finished_at>=now()-interval '30 days') samples) availability ON true
     LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',g.id,'name',g.name,'color',g.color) ORDER BY g.name) AS items
       FROM device_group_memberships m JOIN device_groups g ON g.id=m.group_id WHERE m.device_id=d.id) groups ON true
     LEFT JOIN LATERAL (SELECT r.id,r.change_reference,u.display_name AS manager_name,r.started_at FROM change_record_devices m
