@@ -14,22 +14,24 @@ async function ping(job: ProbeJob): Promise<ProbeResult> {
       timeout: job.timeoutMs + 500,
     });
     const match = stdout.match(/time[=<]([\d.]+)\s*ms/i);
+    const latencyMs = match ? Number(match[1]) : performance.now() - start;
     return {
       status: "up",
       startedAt: startedAt.toISOString(),
       finishedAt: new Date().toISOString(),
-      latencyMs: match ? Number(match[1]) : performance.now() - start,
+      latencyMs,
       message: "ICMP echo reply received",
-      metrics: { packetLossPercent: 0 },
+      metrics: { packetLossPercent: 0, responseTimeMs: latencyMs },
     };
   } catch (error) {
+    const latencyMs = performance.now() - start;
     return {
       status: "down",
       startedAt: startedAt.toISOString(),
       finishedAt: new Date().toISOString(),
-      latencyMs: performance.now() - start,
+      latencyMs,
       message: error instanceof Error ? error.message : "Ping failed",
-      metrics: { packetLossPercent: 100 },
+      metrics: { packetLossPercent: 100, responseTimeMs: latencyMs },
     };
   }
 }

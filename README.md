@@ -4,6 +4,12 @@ HedgeSight is a self-hosted active infrastructure monitoring platform. Its contr
 
 This initial build supports ICMP Ping and HTTP/HTTPS checks. SNMP and SSH are included in the data model and will be enabled as their secure probe implementations mature.
 
+## Ping monitoring
+
+Every device receives a Ping availability check when it is created. The interval is selected during device creation and can range from 10 seconds to 15 minutes in the web interface. Existing devices are backfilled automatically during migration.
+
+Ping results record availability, response time, and packet loss. The **Monitoring** page shows current state, latest latency, polling interval, last check time, and the latest 30 response-time samples. Device profile fields are included now and display placeholders until SSH profiling is implemented.
+
 ## Scalable monitoring storage
 
 HedgeSight stores availability results, generic numeric metrics, interface counters, rollups, and configuration snapshots separately. Interface counters use PostgreSQL numeric values so 64-bit SNMP counters are not truncated by JavaScript. Daily PostgreSQL partitions are prepared automatically for raw interface and metric samples.

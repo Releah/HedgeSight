@@ -54,22 +54,42 @@ app.get("/api/devices", async (_request, response) => {
   response.json(result.rows);
 });
 
+app.get("/api/monitoring", async (_request, response) => {
+  const result = await pool.query(`SELECT d.id,d.name,d.address,d.description,d.status,
+    d.os_name AS "osName",d.os_version AS "osVersion",d.device_type AS "deviceType",d.vendor,d.model,
+    d.profile_source AS "profileSource",d.profiled_at AS "profiledAt",p.id AS "pingCheckId",
+    p.interval_seconds AS "intervalSeconds",p.last_status AS "pingStatus",p.last_run_at AS "lastRunAt",
+    latest.latency_ms AS "latencyMs",COALESCE((latest.metrics->>'packetLossPercent')::double precision,0) AS "packetLossPercent",
+    COALESCE(history.points,'[]'::json) AS history
+    FROM devices d
+    LEFT JOIN LATERAL (SELECT * FROM checks WHERE device_id=d.id AND kind='ping' ORDER BY created_at LIMIT 1) p ON true
+    LEFT JOIN LATERAL (SELECT latency_ms,metrics FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 1) latest ON true
+    LEFT JOIN LATERAL (SELECT json_agg(json_build_object('timestamp',x.finished_at,'latencyMs',x.latency_ms,'status',x.status) ORDER BY x.finished_at) AS points
+      FROM (SELECT finished_at,latency_ms,status FROM probe_results WHERE check_id=p.id ORDER BY finished_at DESC LIMIT 30) x) history ON true
+    ORDER BY d.name`);
+  response.json(result.rows);
+});
+
 const deviceSchema = z.object({
   name: z.string().trim().min(1).max(120),
   address: z.string().trim().min(1).max(255),
   description: z.string().max(1000).default(""),
   enabled: z.boolean().default(true),
+  pingIntervalSeconds: z.number().int().min(10).max(86400).default(60),
 });
 
 app.post("/api/devices", async (request, response) => {
   const parsed = deviceSchema.safeParse(request.body);
   if (!parsed.success) return response.status(400).json({ error: "Invalid device", issues: parsed.error.issues });
-  const { name, address, description, enabled } = parsed.data;
-  const result = await pool.query(
-    "INSERT INTO devices(name, address, description, enabled) VALUES ($1,$2,$3,$4) RETURNING *",
-    [name, address, description, enabled],
-  );
-  return response.status(201).json(result.rows[0]);
+  const { name, address, description, enabled, pingIntervalSeconds } = parsed.data;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("INSERT INTO devices(name,address,description,enabled) VALUES ($1,$2,$3,$4) RETURNING *", [name,address,description,enabled]);
+    await client.query(`INSERT INTO checks(device_id,name,kind,interval_seconds,timeout_ms,config)
+      VALUES($1,'Ping availability','ping',$2,5000,'{}'::jsonb)`, [result.rows[0].id,pingIntervalSeconds]);
+    await client.query("COMMIT"); return response.status(201).json(result.rows[0]);
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
 
 const checkSchema = z.object({
