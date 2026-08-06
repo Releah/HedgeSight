@@ -1163,6 +1163,8 @@ export function PrivateApp({
   const [groupFilter, setGroupFilter] = useState("all");
   const [newGroupName, setNewGroupName] = useState("");
   const [editing, setEditing] = useState<MonitoringDevice | null>(null);
+  const [deviceEditTab,setDeviceEditTab]=useState<"general"|"monitoring">("general");
+  const [monitoringPlatform,setMonitoringPlatform]=useState<"linux"|"vmware">("linux");
   const [deviceDetail,setDeviceDetail]=useState<MonitoringDevice|null>(null);
   const [expandedDevice, setExpandedDevice] = useState<string | null>(null);
   const [interfaceStats, setInterfaceStats] = useState<
@@ -1545,8 +1547,8 @@ export function PrivateApp({
         vendor: data.get("vendor") || null,
         model: data.get("model") || null,
         groupIds: data.getAll("groupIds"),
-        sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),cpuThresholdPercent:Number(data.get("cpuThresholdPercent")||90),memoryThresholdPercent:Number(data.get("memoryThresholdPercent")||90),diskThresholdPercent:Number(data.get("diskThresholdPercent")||90),interfaceThresholdPercent:Number(data.get("interfaceThresholdPercent")||90),interfaceErrorThreshold:Number(data.get("interfaceErrorThreshold")||1),monitoredComponents:data.getAll("monitoredComponents"),
-        vsphereEnabled:data.get("vsphereEnabled")==="on",vsphereCredentialId:data.get("vsphereCredentialId")||null,vspherePort:Number(data.get("vspherePort")||443),vsphereVerifyTls:data.get("vsphereVerifyTls")==="on",vsphereIntervalSeconds:Number(data.get("vsphereIntervalSeconds")||300),vsphereCpuThresholdPercent:Number(data.get("vsphereCpuThresholdPercent")||90),vsphereMemoryThresholdPercent:Number(data.get("vsphereMemoryThresholdPercent")||90),vsphereDatastoreThresholdPercent:Number(data.get("vsphereDatastoreThresholdPercent")||90),vsphereMonitoredComponents:data.getAll("vsphereMonitoredComponents"),
+        sshEnabled:monitoringPlatform==="linux"&&data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),cpuThresholdPercent:Number(data.get("cpuThresholdPercent")||90),memoryThresholdPercent:Number(data.get("memoryThresholdPercent")||90),diskThresholdPercent:Number(data.get("diskThresholdPercent")||90),interfaceThresholdPercent:Number(data.get("interfaceThresholdPercent")||90),interfaceErrorThreshold:Number(data.get("interfaceErrorThreshold")||1),monitoredComponents:data.getAll("monitoredComponents"),
+        vsphereEnabled:monitoringPlatform==="vmware"&&data.get("vsphereEnabled")==="on",vsphereCredentialId:data.get("vsphereCredentialId")||null,vspherePort:Number(data.get("vspherePort")||443),vsphereVerifyTls:data.get("vsphereVerifyTls")==="on",vsphereIntervalSeconds:Number(data.get("vsphereIntervalSeconds")||300),vsphereCpuThresholdPercent:Number(data.get("vsphereCpuThresholdPercent")||90),vsphereMemoryThresholdPercent:Number(data.get("vsphereMemoryThresholdPercent")||90),vsphereDatastoreThresholdPercent:Number(data.get("vsphereDatastoreThresholdPercent")||90),vsphereMonitoredComponents:data.getAll("vsphereMonitoredComponents"),
       }),
     });
     if (response.ok) {
@@ -2257,7 +2259,7 @@ export function PrivateApp({
                   </div>
                   <button
                     className="device-edit"
-                    onClick={() => setEditing(device)}
+                    onClick={() => {setEditing(device);setDeviceEditTab("general");setMonitoringPlatform(device.vsphereEnabled||String(device.osName??"").toLowerCase().includes("vmware")?"vmware":"linux");}}
                   >
                     <Pencil size={14} /> Edit configuration
                   </button>
@@ -3367,7 +3369,9 @@ export function PrivateApp({
             </button>
             <p className="eyebrow">DEVICE MANAGEMENT</p>
             <h2>Edit {editing.name}</h2>
-            <form className="edit-grid" onSubmit={saveDevice}>
+            <div className="device-edit-tabs" role="tablist"><button type="button" className={deviceEditTab==="general"?"active":""} onClick={()=>setDeviceEditTab("general")}>General</button><button type="button" className={deviceEditTab==="monitoring"?"active":""} onClick={()=>setDeviceEditTab("monitoring")}>Monitoring</button></div>
+            <form className={`edit-grid ${deviceEditTab}-view platform-${monitoringPlatform}`} onSubmit={saveDevice}>
+              <div className="monitoring-only monitoring-platform-select"><label>Monitoring platform<select value={monitoringPlatform} onChange={event=>setMonitoringPlatform(event.target.value as "linux"|"vmware")}><option value="linux">Linux · SSH</option><option value="vmware">VMware · vSphere API</option></select></label><p>{monitoringPlatform==="linux"?"Profile Linux hosts and collect component metrics using short-lived SSH sessions.":"Profile ESXi hosts and collect supported metrics through HTTPS on the vSphere API."}</p></div>
               <label>
                 Name
                 <input name="name" defaultValue={editing.name} required />
@@ -3425,7 +3429,7 @@ export function PrivateApp({
                   placeholder="Linux"
                 />
               </label>
-              <fieldset className="full-field ssh-config advanced-monitoring">
+              <fieldset className="full-field ssh-config advanced-monitoring monitoring-only platform-linux-settings">
                 <legend>Advanced Linux monitoring</legend>
                 <label className="toggle-label"><input type="checkbox" name="sshEnabled" defaultChecked={Boolean(editing.sshEnabled)}/> Collect selected component metrics over SSH</label>
                 <label>Stored credential<select name="sshCredentialId" defaultValue={editing.sshCredentialId??""}><option value="">Select credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label>
@@ -3439,7 +3443,7 @@ export function PrivateApp({
                 <div className="threshold-grid"><strong>Alert thresholds</strong><label>CPU utilisation %<input name="cpuThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.cpuThresholdPercent??90)}/></label><label>Memory utilisation %<input name="memoryThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.memoryThresholdPercent??90)}/></label><label>Disk used %<input name="diskThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.diskThresholdPercent??90)}/></label><label>Interface utilisation %<input name="interfaceThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.interfaceThresholdPercent??90)}/></label><label>Interface errors<input name="interfaceErrorThreshold" type="number" min="0" defaultValue={Number(editing.sshThresholds.interfaceErrorThreshold??1)}/></label></div>
                 <small>Unselected components remain discoverable but no longer store samples or trigger threshold alerts.</small>
               </fieldset>
-              <fieldset className="full-field ssh-config advanced-monitoring vsphere-config">
+              <fieldset className="full-field ssh-config advanced-monitoring vsphere-config monitoring-only platform-vmware-settings">
                 <legend>VMware ESXi / vSphere monitoring</legend>
                 <label className="toggle-label"><input type="checkbox" name="vsphereEnabled" defaultChecked={Boolean(editing.vsphereEnabled)}/> Profile and monitor this host through the supported vSphere API</label>
                 <label>Stored credential<select name="vsphereCredentialId" defaultValue={editing.vsphereCredentialId??""}><option value="">Select read-only credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label>
