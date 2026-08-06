@@ -1,4 +1,4 @@
-export const checkKinds = ["ping", "http", "snmp", "ssh"] as const;
+export const checkKinds = ["ping", "http", "snmp", "ssh", "vsphere"] as const;
 export type CheckKind = (typeof checkKinds)[number];
 export type Status = "up" | "down" | "degraded" | "unknown";
 

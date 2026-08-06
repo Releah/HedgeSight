@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import { Client, type ConnectConfig } from "ssh2";
 import type { ProbeJob, ProbeResult } from "@hedgesight/contracts";
+import { vsphere } from "./vsphere.js";
 
 const execFileAsync = promisify(execFile);
 const sshCounterHistory=new Map<string,{at:number;inOctets:bigint;outOctets:bigint;errors:bigint}>();
@@ -128,6 +129,7 @@ export async function executeProbe(job: ProbeJob): Promise<ProbeResult> {
   if (job.kind === "ping") return ping(job);
   if (job.kind === "http") return http(job);
   if (job.kind === "ssh") return ssh(job);
+  if (job.kind === "vsphere") return vsphere(job);
   return {
     status: "unknown",
     startedAt: new Date().toISOString(),

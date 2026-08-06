@@ -90,6 +90,7 @@ type MonitoringDevice = {
   maintenanceEstimatedEndAt: string | null;
   changeStatus: "scheduled"|"active"|"overdue"|null;
   sshCredentialId:string|null;sshCredentialName:string|null;sshPort:number|null;sshEnabled:boolean|null;sshIntervalSeconds:number|null;sshStatus:string|null;sshLastRunAt:string|null;sshProfile:Record<string,unknown>;sshProfiledAt:string|null;sshThresholds:Record<string,unknown>;
+  vsphereCredentialId:string|null;vspherePort:number|null;vsphereVerifyTls:boolean|null;vsphereEnabled:boolean|null;vsphereIntervalSeconds:number|null;vsphereStatus:string|null;vsphereLastRunAt:string|null;vsphereProfile:Record<string,unknown>;vsphereProfiledAt:string|null;vsphereThresholds:Record<string,unknown>;
   uptimeSeconds: string | null;
   downtimeSeconds: string | null;
   maintenanceDowntimeSeconds: string | null;
@@ -1545,6 +1546,7 @@ export function PrivateApp({
         model: data.get("model") || null,
         groupIds: data.getAll("groupIds"),
         sshEnabled:data.get("sshEnabled")==="on",sshCredentialId:data.get("sshCredentialId")||null,sshPort:Number(data.get("sshPort")||22),sshIntervalSeconds:Number(data.get("sshIntervalSeconds")||900),cpuThresholdPercent:Number(data.get("cpuThresholdPercent")||90),memoryThresholdPercent:Number(data.get("memoryThresholdPercent")||90),diskThresholdPercent:Number(data.get("diskThresholdPercent")||90),interfaceThresholdPercent:Number(data.get("interfaceThresholdPercent")||90),interfaceErrorThreshold:Number(data.get("interfaceErrorThreshold")||1),monitoredComponents:data.getAll("monitoredComponents"),
+        vsphereEnabled:data.get("vsphereEnabled")==="on",vsphereCredentialId:data.get("vsphereCredentialId")||null,vspherePort:Number(data.get("vspherePort")||443),vsphereVerifyTls:data.get("vsphereVerifyTls")==="on",vsphereIntervalSeconds:Number(data.get("vsphereIntervalSeconds")||300),vsphereCpuThresholdPercent:Number(data.get("vsphereCpuThresholdPercent")||90),vsphereMemoryThresholdPercent:Number(data.get("vsphereMemoryThresholdPercent")||90),vsphereDatastoreThresholdPercent:Number(data.get("vsphereDatastoreThresholdPercent")||90),vsphereMonitoredComponents:data.getAll("vsphereMonitoredComponents"),
       }),
     });
     if (response.ok) {
@@ -2082,6 +2084,12 @@ export function PrivateApp({
                                   {componentMonitored(device,"cpu")&&<button onClick={()=>setChart({deviceId:device.id,title:`${device.name} · CPU utilisation`,kind:"metric",key:"cpuUsedPercent",unit:"%"})}><small>CPU UTILISATION</small><strong className={Number(device.sshProfile.cpuUsedPercent??0)>=Number(device.sshThresholds.cpuThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.cpuUsedPercent??0).toFixed(1)}%</strong><span>{String(device.sshProfile.cpuCount??"—")} cores · view history</span></button>}
                                   {componentMonitored(device,"memory")&&<button onClick={()=>setChart({deviceId:device.id,title:`${device.name} · RAM utilisation`,kind:"metric",key:"memoryUsedPercent",unit:"%"})}><small>RAM UTILISATION</small><strong className={Number(device.sshProfile.memoryUsedPercent??0)>=Number(device.sshThresholds.memoryThresholdPercent??90)?"threshold-breach":""}>{Number(device.sshProfile.memoryUsedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(device.sshProfile.memoryBytes??0))} · view history</span></button>}
                                   {((device.sshProfile.filesystems as Array<Record<string,unknown>>)||[]).filter(item=>componentMonitored(device,`disk:${String(item.mount)}`)).map(item=><button key={String(item.mount)} onClick={()=>setChart({deviceId:device.id,title:`${device.name} · ${String(item.mount)} disk usage`,kind:"metric",key:`diskUsedPercent:${String(item.mount)}`,unit:"%"})}><small>DISK · {String(item.mount)}</small><strong className={Number(item.usedPercent??0)>=Number(device.sshThresholds.diskThresholdPercent??90)?"threshold-breach":""}>{Number(item.usedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(item.usedBytes??0))} used · view history</span></button>)}
+                                </section>}
+                                {device.vsphereProfiledAt&&<section className="ssh-metric-strip vsphere-metric-strip">
+                                  <div><small>VSPHERE CHECK</small><strong className={device.vsphereStatus==="degraded"?"threshold-breach":""}>{device.vsphereStatus??"unknown"}</strong><span>{relativeTime(device.vsphereProfiledAt)}</span></div>
+                                  {(!Array.isArray(device.vsphereThresholds.monitoredComponents)||(device.vsphereThresholds.monitoredComponents as string[]).includes("cpu"))&&<button onClick={()=>setChart({deviceId:device.id,title:`${device.name} · ESXi CPU utilisation`,kind:"metric",key:"cpuUsedPercent",unit:"%"})}><small>HOST CPU</small><strong>{Number(device.vsphereProfile.cpuUsedPercent??0).toFixed(1)}%</strong><span>{String(device.vsphereProfile.cpuCount??"—")} cores · view history</span></button>}
+                                  {(!Array.isArray(device.vsphereThresholds.monitoredComponents)||(device.vsphereThresholds.monitoredComponents as string[]).includes("memory"))&&<button onClick={()=>setChart({deviceId:device.id,title:`${device.name} · ESXi memory utilisation`,kind:"metric",key:"memoryUsedPercent",unit:"%"})}><small>HOST MEMORY</small><strong>{Number(device.vsphereProfile.memoryUsedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(device.vsphereProfile.memoryBytes??0))} · view history</span></button>}
+                                  {((device.vsphereProfile.datastores as Array<Record<string,unknown>>)||[]).filter(item=>!Array.isArray(device.vsphereThresholds.monitoredComponents)||(device.vsphereThresholds.monitoredComponents as string[]).includes(`datastore:${String(item.id)}`)).map(item=><button key={String(item.id)} onClick={()=>setChart({deviceId:device.id,title:`${device.name} · ${String(item.name)} datastore`,kind:"metric",key:`datastoreUsedPercent:${String(item.id)}`,unit:"%"})}><small>DATASTORE · {String(item.name)}</small><strong>{Number(item.usedPercent??0).toFixed(1)}%</strong><span>{formatBytes(String(item.usedBytes??0))} used · view history</span></button>)}
                                 </section>}
                                 {!interfaceStats[device.id] ? (
                                   <div className="interface-empty">
@@ -2811,7 +2819,7 @@ export function PrivateApp({
                 </span>
               </button>
               <button className={settingsTab === "credentials" ? "active" : ""} onClick={() => setSettingsTab("credentials")}>
-                <LockKeyhole /> <span><strong>Credentials</strong><small>SSH accounts and assignments</small></span>
+                <LockKeyhole /> <span><strong>Credentials</strong><small>SSH and vSphere accounts</small></span>
               </button>
               <button
                 className={settingsTab === "accounts" ? "active" : ""}
@@ -3430,6 +3438,21 @@ export function PrivateApp({
                 </div>
                 <div className="threshold-grid"><strong>Alert thresholds</strong><label>CPU utilisation %<input name="cpuThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.cpuThresholdPercent??90)}/></label><label>Memory utilisation %<input name="memoryThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.memoryThresholdPercent??90)}/></label><label>Disk used %<input name="diskThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.diskThresholdPercent??90)}/></label><label>Interface utilisation %<input name="interfaceThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.sshThresholds.interfaceThresholdPercent??90)}/></label><label>Interface errors<input name="interfaceErrorThreshold" type="number" min="0" defaultValue={Number(editing.sshThresholds.interfaceErrorThreshold??1)}/></label></div>
                 <small>Unselected components remain discoverable but no longer store samples or trigger threshold alerts.</small>
+              </fieldset>
+              <fieldset className="full-field ssh-config advanced-monitoring vsphere-config">
+                <legend>VMware ESXi / vSphere monitoring</legend>
+                <label className="toggle-label"><input type="checkbox" name="vsphereEnabled" defaultChecked={Boolean(editing.vsphereEnabled)}/> Profile and monitor this host through the supported vSphere API</label>
+                <label>Stored credential<select name="vsphereCredentialId" defaultValue={editing.vsphereCredentialId??""}><option value="">Select read-only credential</option>{credentials.map(item=><option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label>
+                <label>HTTPS port<input name="vspherePort" type="number" min="1" max="65535" defaultValue={editing.vspherePort??443}/></label>
+                <label>Snapshot interval<select name="vsphereIntervalSeconds" defaultValue={editing.vsphereIntervalSeconds??300}><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label>
+                <label className="toggle-label"><input type="checkbox" name="vsphereVerifyTls" defaultChecked={editing.vsphereVerifyTls!==false}/> Verify the ESXi/vCenter TLS certificate</label>
+                <div className="component-inventory"><strong>Discovered vSphere components <small>Click to include or exclude</small></strong>
+                  {[{id:"cpu",label:`Host CPU · ${String(editing.vsphereProfile.cpuCount??"—")} cores`},{id:"memory",label:`Host RAM · ${formatBytes(String(editing.vsphereProfile.memoryBytes??0))}`}].map(component=><label key={component.id} className="component-toggle"><input type="checkbox" name="vsphereMonitoredComponents" value={component.id} defaultChecked={!Array.isArray(editing.vsphereThresholds.monitoredComponents)||(editing.vsphereThresholds.monitoredComponents as string[]).includes(component.id)}/><span>{component.label}</span></label>)}
+                  {((editing.vsphereProfile.datastores as Array<Record<string,unknown>>)||[]).map(item=>{const id=`datastore:${String(item.id)}`;return <label key={id} className="component-toggle"><input type="checkbox" name="vsphereMonitoredComponents" value={id} defaultChecked={!Array.isArray(editing.vsphereThresholds.monitoredComponents)||(editing.vsphereThresholds.monitoredComponents as string[]).includes(id)}/><span>Datastore · {String(item.name)}</span></label>})}
+                  {((editing.vsphereProfile.interfaces as Array<Record<string,unknown>>)||[]).map(item=><span key={String(item.name)}>Physical NIC · {String(item.name)} · {String(item.speedMbps??"—")} Mbps</span>)}
+                </div>
+                <div className="threshold-grid"><strong>Alert thresholds</strong><label>CPU utilisation %<input name="vsphereCpuThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.vsphereThresholds.cpuThresholdPercent??90)}/></label><label>Memory utilisation %<input name="vsphereMemoryThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.vsphereThresholds.memoryThresholdPercent??90)}/></label><label>Datastore used %<input name="vsphereDatastoreThresholdPercent" type="number" min="1" max="100" defaultValue={Number(editing.vsphereThresholds.diskThresholdPercent??90)}/></label></div>
+                <small>Uses short-lived vSphere API sessions over HTTPS. Use a read-only account. Disable certificate verification only for a trusted self-signed management endpoint.</small>
               </fieldset>
               <label>
                 OS version
