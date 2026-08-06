@@ -1,0 +1,16 @@
+import express from "express";
+import { z } from "zod";
+import { validToken } from "./auth.js";
+import { pool } from "./db.js";
+
+export type LogLevel="debug"|"info"|"warn"|"error";
+const weights:Record<LogLevel,number>={debug:10,info:20,warn:30,error:40};
+export async function writeSystemLog(level:LogLevel,source:string,category:string,message:string,context:Record<string,unknown>={}):Promise<void>{
+  const setting=await pool.query("SELECT minimum_level FROM system_log_settings WHERE id=true");const minimum=(setting.rows[0]?.minimum_level??"info") as LogLevel;if(weights[level]<weights[minimum])return;
+  await pool.query("INSERT INTO system_logs(level,source,category,message,context) VALUES($1,$2,$3,$4,$5)",[level,source.slice(0,120),category.slice(0,120),message.slice(0,4000),context]);
+}
+export const systemLogsRouter:express.Router=express.Router();
+systemLogsRouter.get("/system-logs",async(request,response)=>{const parsed=z.object({level:z.enum(["all","debug","info","warn","error"]).default("all"),search:z.string().max(500).default(""),source:z.string().max(120).default(""),limit:z.coerce.number().int().min(1).max(500).default(200)}).safeParse(request.query);if(!parsed.success)return response.status(400).json({error:"Invalid log search"});const v=parsed.data,result=await pool.query(`SELECT id,created_at AS "createdAt",level,source,category,message,context FROM system_logs WHERE ($1='all' OR level=$1) AND ($2='' OR source=$2) AND ($3='' OR message ILIKE '%'||$3||'%' OR category ILIKE '%'||$3||'%') ORDER BY created_at DESC LIMIT $4`,[v.level,v.source,v.search,v.limit]);response.json(result.rows);});
+systemLogsRouter.get("/settings/system-logs",async(_request,response)=>{const result=await pool.query(`SELECT minimum_level AS "minimumLevel",retention_days AS "retentionDays" FROM system_log_settings WHERE id=true`);response.json(result.rows[0]);});
+systemLogsRouter.put("/settings/system-logs",async(request,response)=>{if(response.locals.user?.role!=="admin")return response.status(403).json({error:"Administrator access required"});const parsed=z.object({minimumLevel:z.enum(["debug","info","warn","error"]),retentionDays:z.number().int().min(1).max(3650)}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Choose a logging level and retention between 1 and 3,650 days"});await pool.query("UPDATE system_log_settings SET minimum_level=$1,retention_days=$2,updated_at=now() WHERE id=true",[parsed.data.minimumLevel,parsed.data.retentionDays]);await writeSystemLog("info","api","settings",`System logging set to ${parsed.data.minimumLevel}; retention ${parsed.data.retentionDays} days`);response.json({saved:true});});
+systemLogsRouter.post("/workers/system-logs",async(request,response)=>{if(!validToken(request))return response.status(401).json({error:"Invalid worker token"});const parsed=z.object({level:z.enum(["debug","info","warn","error"]),source:z.string().min(1).max(120),category:z.string().min(1).max(120),message:z.string().min(1).max(4000),context:z.record(z.string(),z.unknown()).default({})}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Invalid log event"});await writeSystemLog(parsed.data.level,parsed.data.source,parsed.data.category,parsed.data.message,parsed.data.context);response.status(202).json({stored:true});});

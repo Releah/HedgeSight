@@ -37,6 +37,7 @@ import {
   Users,
   Wrench,
   LockKeyhole,
+  FileText,
   X,
 } from "lucide-react";
 
@@ -48,6 +49,7 @@ type View =
   | "tasks"
   | "maintenance"
   | "backups"
+  | "logs"
   | "workers"
   | "settings";
 type DeviceGroup = {
@@ -148,6 +150,7 @@ type DatabaseStatus={source:string;host:string;port:string;database:string;tls:s
 type BackupProfile={id:string;name:string;description:string;kind:"network_script"|"server_files";script:string;paths:string[];jobCount:number;updatedAt:string};
 type BackupJob={id:string;name:string;profileId:string;profileName:string;kind:string;deviceId:string;deviceName:string;credentialId:string;credentialName:string;sshPort:number;intervalSeconds:number;retentionCount:number;enabled:boolean;nextRunAt:string;lastRunAt:string|null;lastStatus:string;lastMessage:string|null};
 type BackupSummary={total:number;enabled:number;healthy:number;failed:number;pending:number;recent:Array<{id:string;state:string;createdAt:string;finishedAt:string|null;message:string|null;sizeBytes:string|null;jobName:string;deviceName:string;kind:string}>};
+type SystemLog={id:string;createdAt:string;level:"debug"|"info"|"warn"|"error";source:string;category:string;message:string;context:Record<string,unknown>};
 type ChartRequest={deviceId:string;title:string;kind:"metric"|"interface";key?:string;interfaceId?:string;unit:string};
 type ChartPoint={timestamp:string;value?:number;inBps?:number|null;outBps?:number|null;utilizationInPercent?:number|null;utilizationOutPercent?:number|null;errorDelta?:number|null;discardDelta?:number|null};
 type Account = {
@@ -279,6 +282,7 @@ const pageCopy: Record<
   tasks:{eyebrow:"FOLLOW-UP ACTIONS",title:"Tasks",description:"Track root-cause work and follow-up actions linked to incidents."},
   maintenance:{eyebrow:"CHANGE MANAGEMENT",title:"Maintenance",description:"Review, extend and complete planned maintenance windows."},
   backups:{eyebrow:"CONFIGURATION PROTECTION",title:"Backups",description:"Schedule and verify encrypted network and server backups."},
+  logs:{eyebrow:"OBSERVABILITY",title:"Logs",description:"Search platform activity, collector failures and diagnostic events."},
   workers: {
     eyebrow: "POLLING",
     title: "Workers",
@@ -327,6 +331,8 @@ function StatusBadge({ status }: { status: string }) {
 function componentMonitored(device:MonitoringDevice,id:string):boolean{const selected=device.sshThresholds.monitoredComponents;return !Array.isArray(selected)||(selected as string[]).includes(id);}
 function chartSegments(points:ChartPoint[],value:(point:ChartPoint)=>number,start:number,end:number,maximum:number){const width=720,height=230,dated=points.map(point=>({point,time:new Date(point.timestamp).getTime()})).filter(item=>Number.isFinite(item.time)&&item.time>=start&&item.time<=end).sort((a,b)=>a.time-b.time),gaps=dated.slice(1).map((item,index)=>item.time-dated[index].time).filter(gap=>gap>0).sort((a,b)=>a-b),typical=gaps.length?gaps[Math.floor(gaps.length/2)]:60_000,gapLimit=Math.max(typical*3,5*60_000),segments:string[][]=[];let current:string[]=[];dated.forEach((item,index)=>{if(index&&item.time-dated[index-1].time>gapLimit){if(current.length)segments.push(current);current=[];}const x=(item.time-start)/(end-start)*width,y=height-(value(item.point)/Math.max(1,maximum))*height;current.push(`${x},${y}`);});if(current.length)segments.push(current);return segments;}
 function TimeChart({points,kind,unit,hours}:{points:ChartPoint[];kind:"metric"|"interface";unit:string;hours:number}){const end=Date.now(),start=end-hours*3_600_000,primaryValue=(item:ChartPoint)=>kind==="interface"?Number(item.inBps??0)/1_000_000:Number(item.value??0),secondaryValue=(item:ChartPoint)=>Number(item.outBps??0)/1_000_000,maximum=Math.max(...points.map(primaryValue),...(kind==="interface"?points.map(secondaryValue):[]),0),primary=chartSegments(points,primaryValue,start,end,maximum),secondary=kind==="interface"?chartSegments(points,secondaryValue,start,end,maximum):[],errorTotal=points.reduce((sum,item)=>sum+Number(item.errorDelta??0),0),discardTotal=points.reduce((sum,item)=>sum+Number(item.discardDelta??0),0),firstSample=points.length?Math.min(...points.map(item=>new Date(item.timestamp).getTime())):null;if(!points.length)return <div className="chart-empty">No samples in this time window yet.</div>;return <><div className="chart-scale"><span>{maximum.toFixed(maximum<10?2:1)} {unit}</span><span>0 {unit}</span></div><svg className="history-chart" viewBox="0 0 720 230" preserveAspectRatio="none" aria-label="Metric history"><line x1="0" y1="0" x2="720" y2="0"/><line x1="0" y1="115" x2="720" y2="115"/><line x1="0" y1="230" x2="720" y2="230"/>{primary.map((segment,index)=>segment.length>1?<polyline key={`primary-${index}`} className="chart-primary" points={segment.join(" ")}/>:<circle key={`primary-${index}`} className="chart-primary-point" cx={segment[0].split(",")[0]} cy={segment[0].split(",")[1]} r="3"/>)}{secondary.map((segment,index)=>segment.length>1?<polyline key={`secondary-${index}`} className="chart-secondary" points={segment.join(" ")}/>:<circle key={`secondary-${index}`} className="chart-secondary-point" cx={segment[0].split(",")[0]} cy={segment[0].split(",")[1]} r="3"/>)}{kind==="interface"&&points.map((item,index)=>{const x=(new Date(item.timestamp).getTime()-start)/(end-start)*720;return <Fragment key={`events-${index}`}>{Number(item.errorDelta??0)>0&&<circle className="chart-error-point" cx={x} cy="16" r="5"><title>{item.errorDelta} errors at {new Date(item.timestamp).toLocaleString()}</title></circle>}{Number(item.discardDelta??0)>0&&<circle className="chart-discard-point" cx={x} cy="34" r="5"><title>{item.discardDelta} discards at {new Date(item.timestamp).toLocaleString()}</title></circle>}</Fragment>})}</svg><div className="chart-axis"><span>{new Date(start).toLocaleString()}</span><span>{new Date(end).toLocaleString()}</span></div>{firstSample!==null&&firstSample-start>300_000&&<p className="chart-coverage">Recorded data begins {new Date(firstSample).toLocaleString()}; the earlier part of this window has no samples.</p>}{kind==="interface"&&<><div className="chart-legend"><span className="in">Inbound</span><span className="out">Outbound</span><span className="errors">Errors ({errorTotal})</span><span className="discards">Discards ({discardTotal})</span></div>{errorTotal===0&&discardTotal===0&&<p className="chart-events-empty">No errors or discards recorded in this window.</p>}</>}</>}
+
+function LogsPage(){const [tab,setTab]=useState<"system"|"syslog"|"os">("system"),[logs,setLogs]=useState<SystemLog[]>([]),[level,setLevel]=useState("all"),[search,setSearch]=useState(""),[loading,setLoading]=useState(false);async function load(){setLoading(true);const response=await fetch(`/api/system-logs?level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}&limit=300`);if(response.ok)setLogs(await response.json());setLoading(false);}useEffect(()=>{if(tab==="system")void load();},[tab,level]);return <section className="logs-page"><div className="backup-tabs"><button className={tab==="system"?"active":""} onClick={()=>setTab("system")}>System logs</button><button className={tab==="syslog"?"active":""} onClick={()=>setTab("syslog")}>Syslog <b>Future</b></button><button className={tab==="os"?"active":""} onClick={()=>setTab("os")}>OS logs <b>Future</b></button></div>{tab!=="system"?<Panel title={tab==="syslog"?"Syslog ingestion":"Operating system logs"} subtitle="Reserved for a future collector and searchable log store" className="full-panel"><div className="logs-placeholder"><FileText/><strong>Collector not enabled yet</strong><span>System logging is available now. This tab establishes the workspace for the next ingestion phase.</span></div></Panel>:<><form className="log-toolbar" onSubmit={event=>{event.preventDefault();void load();}}><Search size={15}/><input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Search messages and categories"/><select value={level} onChange={event=>setLevel(event.target.value)}><option value="all">All levels</option><option value="error">Errors</option><option value="warn">Warnings</option><option value="info">Information</option><option value="debug">Debug</option></select><button className="secondary"><RefreshCw size={14}/>{loading?"Loading…":"Search"}</button></form><Panel title="System activity" subtitle={`${logs.length} most recent matching events`} className="full-panel"><div className="system-log-list">{logs.map(item=><article key={item.id} className={`log-${item.level}`}><time>{new Date(item.createdAt).toLocaleString()}</time><span className="log-level">{item.level}</span><div><strong>{item.source} · {item.category}</strong><p>{item.message}</p>{Object.keys(item.context||{}).length>0&&<code>{JSON.stringify(item.context)}</code>}</div></article>)}{!logs.length&&<div className="logs-placeholder"><ShieldCheck/><strong>No matching system events</strong><span>Collector failures and application diagnostics will appear here.</span></div>}</div></Panel></>}</section>}
 
 function BackupsPage({devices,credentials,canEdit}:{devices:MonitoringDevice[];credentials:StoredCredential[];canEdit:boolean}){
   const [tab,setTab]=useState<"overview"|"jobs"|"profiles">("overview"),[profiles,setProfiles]=useState<BackupProfile[]>([]),[jobs,setJobs]=useState<BackupJob[]>([]),[summary,setSummary]=useState<BackupSummary>({total:0,enabled:0,healthy:0,failed:0,pending:0,recent:[]}),[profileKind,setProfileKind]=useState<"network_script"|"server_files">("network_script"),[message,setMessage]=useState("");
@@ -1155,6 +1161,8 @@ export function PrivateApp({
   });
   const [storage, setStorage] = useState<StorageStatus | null>(null);
   const [retentionSaved, setRetentionSaved] = useState(false);
+  const [logSettings,setLogSettings]=useState<{minimumLevel:"debug"|"info"|"warn"|"error";retentionDays:number}>({minimumLevel:"info",retentionDays:30});
+  const [logSettingsSaved,setLogSettingsSaved]=useState(false);
   const [monitoring, setMonitoring] = useState<MonitoringDevice[]>([]);
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [search, setSearch] = useState("");
@@ -1277,6 +1285,7 @@ export function PrivateApp({
       fetch("/api/storage/status")
         .then((r) => r.json())
         .then(setStorage),
+      fetch("/api/settings/system-logs").then(r=>r.ok?r.json():null).then(value=>value&&setLogSettings(value)),
     ]);
   }, []);
   useEffect(() => {
@@ -1689,6 +1698,7 @@ export function PrivateApp({
       1000,
     );
   }
+  async function saveLogSettings(event:FormEvent<HTMLFormElement>){event.preventDefault();const response=await fetch("/api/settings/system-logs",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(logSettings)});if(response.ok){setLogSettingsSaved(true);window.setTimeout(()=>setLogSettingsSaved(false),2500);}}
   function formatBytes(value?: string) {
     const bytes = Number(value ?? 0);
     if (bytes < 1_048_576) return `${Math.round(bytes / 1024)} KB`;
@@ -1857,6 +1867,7 @@ export function PrivateApp({
           {nav("tasks", <ClipboardList />, "Tasks", <span className="nav-count">{tasks.filter(item=>item.status!=="completed").length}</span>)}
           {nav("maintenance", <CalendarClock />, "Maintenance", <span className="nav-count">{changes.filter(item=>item.status!=="completed").length}</span>)}
           {nav("backups", <HardDriveDownload />, "Backups")}
+          {nav("logs", <FileText />, "Logs")}
           {nav("workers", <Box />, "Workers")}
         </nav>
         <div className="sidebar-bottom">
@@ -2782,6 +2793,7 @@ export function PrivateApp({
           </section>
         )}
         {view === "backups" && <BackupsPage devices={monitoring} credentials={credentials} canEdit={["admin","operator"].includes(user.role)}/>}
+        {view === "logs" && <LogsPage/>}
         {view === "workers" && (
           <section className="page-grid">
             <Panel
@@ -2920,6 +2932,7 @@ export function PrivateApp({
                       </div>
                     </form>
                   </Panel>
+                  <Panel title="System log policy" subtitle="Controls which HedgeSight application and worker events are retained" className="full-panel"><form className="log-settings-form" onSubmit={saveLogSettings}><label>Minimum stored level<select value={logSettings.minimumLevel} onChange={event=>setLogSettings({...logSettings,minimumLevel:event.target.value as typeof logSettings.minimumLevel})}><option value="debug">Debug · everything</option><option value="info">Info · normal activity</option><option value="warn">Warning · problems only</option><option value="error">Error · failures only</option></select></label><label>Log retention<input type="number" min="1" max="3650" value={logSettings.retentionDays} onChange={event=>setLogSettings({...logSettings,retentionDays:Number(event.target.value)})}/><small>days</small></label><button className="primary">{logSettingsSaved?"Saved":"Save log policy"}</button></form></Panel>
                   <Panel title="PostgreSQL database" subtitle="Remote database changes are applied after an automatic application restart." className="full-panel">
                     <div className="database-panel-body"><div className="database-current"><Database/><div><small>CURRENT DATABASE</small><strong>{databaseStatus?`${databaseStatus.host}:${databaseStatus.port} / ${databaseStatus.database}`:"Loading…"}</strong><span>{databaseStatus?.source==="managed-file"?"Managed through HedgeSight":"Provided by deployment environment"} · TLS {databaseStatus?.tls??"unspecified"}</span></div></div>
                     <form className="database-switch-form" onSubmit={switchDatabase}><label>Remote PostgreSQL connection URL<input name="connectionString" type="password" required autoComplete="off" placeholder="postgresql://user:password@database.example.com:5432/hedgesight?sslmode=require"/></label><p>Export configuration before switching. HedgeSight creates its schema on the target, but does not copy users, incidents, metrics, credentials or configuration automatically.</p><div className="database-actions"><button className="primary"><Database size={15}/> Test, connect and restart</button></div></form></div>

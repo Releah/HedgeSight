@@ -77,6 +77,7 @@ export async function runStorageMaintenance(): Promise<void> {
       WHERE g.id=true AND s.collected_at < now() - make_interval(days => COALESCE(
         (SELECT configuration_days FROM device_retention_overrides WHERE device_id=s.device_id), g.configuration_days))`);
     deleted += configs.rowCount ?? 0;
+    const logs=await pool.query(`DELETE FROM system_logs l USING system_log_settings s WHERE s.id=true AND l.created_at<now()-make_interval(days=>s.retention_days)`);deleted+=logs.rowCount??0;
     await pool.query("UPDATE storage_maintenance_runs SET status='completed', finished_at=now(), rollups_written=$2, rows_deleted=$3 WHERE id=$1", [run.rows[0].id, rollups, deleted]);
   } catch (error) {
     await pool.query("UPDATE storage_maintenance_runs SET status='failed', finished_at=now(), message=$2 WHERE id=$1", [run.rows[0].id, error instanceof Error ? error.message : String(error)]);

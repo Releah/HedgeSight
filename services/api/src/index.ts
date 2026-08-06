@@ -9,6 +9,7 @@ import { startScheduler } from "./scheduler.js";
 import { startStorageMaintenance } from "./maintenance.js";
 import { storageRouter } from "./storage.js";
 import { backupRouter } from "./backups.js";
+import { systemLogsRouter, writeSystemLog } from "./systemLogs.js";
 
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const port = Number(process.env.APP_PORT ?? 8080);
@@ -146,6 +147,7 @@ app.get("/api/public/status", async (_request, response) => {
 app.use("/api", requireUser);
 app.use("/api", storageRouter);
 app.use("/api", backupRouter);
+app.use("/api", systemLogsRouter);
 
 function requireAdmin(request: express.Request, response: express.Response): boolean {
   if (response.locals.user?.role === "admin") return true;
@@ -634,6 +636,7 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
       FROM probe_jobs j JOIN checks c ON c.id=j.check_id WHERE j.id=$1 AND j.state='leased' FOR UPDATE`, [request.params.jobId]);
     if (!job.rowCount) { await client.query("ROLLBACK"); return response.status(409).json({ error: "Job is not leased" }); }
     const row = job.rows[0];
+    await writeSystemLog(value.status==="up"?"debug":value.status==="degraded"?"warn":"error","worker",`${row.kind}-probe`,value.message??`${row.kind} probe returned ${value.status}`,{deviceId:row.device_id,checkId:row.check_id,status:value.status,latencyMs:value.latencyMs??null});
     const inserted = await client.query(`INSERT INTO probe_results(job_id, check_id, worker_id, status, started_at, finished_at, latency_ms, message, metrics, observations)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [request.params.jobId, row.check_id, row.worker_id, value.status, value.startedAt, value.finishedAt, value.latencyMs, value.message, value.metrics, value.observations]);

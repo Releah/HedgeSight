@@ -8,6 +8,7 @@ const workerName = process.env.WORKER_NAME ?? `worker-${process.pid}`;
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const pollInterval = Number(process.env.JOB_POLL_INTERVAL_MS ?? 3000);
 const capabilities = ["ping", "http", "ssh", "vsphere"];
+async function log(level:"debug"|"info"|"warn"|"error",category:string,message:string,context:Record<string,unknown>={}){try{await fetch(`${apiUrl}/api/workers/system-logs`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({level,source:workerName,category,message,context})});}catch{/* Console remains the final fallback. */}}
 
 async function lease(): Promise<ProbeJob | null> {
   const response = await fetch(`${apiUrl}/api/workers/lease`, {
@@ -45,6 +46,7 @@ for (;;) {
     else await new Promise((resolve) => setTimeout(resolve, pollInterval));
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
+    void log("error","worker-loop",error instanceof Error?error.message:String(error));
     await new Promise((resolve) => setTimeout(resolve, Math.max(pollInterval, 5000)));
   }
 }
