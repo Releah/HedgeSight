@@ -707,12 +707,12 @@ function MajorIncidentPanel({
         </button>
       </div>
       <div className="major-list major-list-tab">
-        {majors.filter(item=>!item.archivedAt).length === 0 ? (
+        {majors.filter(item=>item.status!=="resolved"&&!item.archivedAt).length === 0 ? (
           <div className="chat-empty">
             No major incidents have been declared.
           </div>
         ) : (
-          majors.filter(item=>!item.archivedAt).map((item) => (
+          majors.filter(item=>item.status!=="resolved"&&!item.archivedAt).map((item) => (
             <button key={item.id} onClick={() => onOpen(item.id)}>
               <span className={`major-severity ${item.severity}`}>
                 {item.reference}
@@ -873,12 +873,7 @@ function IncidentHistoryTable({
                   </td>
                   <td>{item.updateCount}</td>
                   <td>
-                    <button
-                      className="incident-open"
-                      onClick={() => onOpen(item.id)}
-                    >
-                      Open incident <ArrowRight size={14} />
-                    </button>
+                    <div className="history-actions"><button className="incident-open" onClick={() => onOpen(item.id)}>Open incident <ArrowRight size={14} /></button><a className="report-download" href={`/api/incidents/${item.id}/report.pdf`} download><FileText size={14}/> PDF</a></div>
                   </td>
                 </tr>
               ))
@@ -1217,7 +1212,7 @@ export function PrivateApp({
   const [deviceEditTab,setDeviceEditTab]=useState<"general"|"monitoring">("general");
   const [monitoringPlatform,setMonitoringPlatform]=useState<"linux"|"vmware">("linux");
   const [deviceDetail,setDeviceDetail]=useState<MonitoringDevice|null>(null);
-  const [expandedDevice, setExpandedDevice] = useState<string | null>(null);
+  const [expandedDevices, setExpandedDevices] = useState<string[]>([]);
   const [interfaceStats, setInterfaceStats] = useState<
     Record<string, InterfaceStats[]>
   >({});
@@ -1358,21 +1353,15 @@ export function PrivateApp({
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   useEffect(() => {
-    if (!expandedDevice) return;
+    if (!expandedDevices.length) return;
     const load = async () => {
-      const response = await fetch(`/api/devices/${expandedDevice}/interfaces`);
-      if (response.ok) {
-        const items = await response.json();
-        setInterfaceStats((current) => ({
-          ...current,
-          [expandedDevice]: items,
-        }));
-      }
+      const results=await Promise.all(expandedDevices.map(async deviceId=>{const response=await fetch(`/api/devices/${deviceId}/interfaces`);return response.ok?{deviceId,items:await response.json()}:null;}));
+      setInterfaceStats(current=>{const next={...current};for(const result of results)if(result)next[result.deviceId]=result.items;return next;});
     };
     void load();
     const timer = window.setInterval(() => void load(), 10_000);
     return () => window.clearInterval(timer);
-  }, [expandedDevice]);
+  }, [expandedDevices]);
   useEffect(()=>{if(!chart)return;let active=true;setChartLoading(true);const url=chart.kind==="interface"?`/api/interfaces/${chart.interfaceId}/history?resolution=raw&hours=${chartHours}`:`/api/devices/${chart.deviceId}/metric-history?key=${encodeURIComponent(chart.key??"")}&hours=${chartHours}`;fetch(url).then(response=>response.ok?response.json():[]).then(data=>{if(active)setChartData(data)}).finally(()=>{if(active)setChartLoading(false)});return()=>{active=false}},[chart,chartHours]);
   function navigate(next: View) {
     setView(next);
@@ -1535,6 +1524,7 @@ export function PrivateApp({
       await refresh();
     }
   }
+  async function linkMajorIncidents(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedMajor)return;const form=event.currentTarget,incidentIds=new FormData(form).getAll("incidentIds");if(!incidentIds.length)return;const response=await fetch(`/api/major-incidents/${selectedMajor.id}/members`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({incidentIds})});if(response.ok){form.reset();await refresh();await openMajorIncident(selectedMajor.id);}else setIncidentError((await response.json()).error??"Unable to link incidents");}
   async function addGroupedMajorUpdate(
     id: string,
     event: FormEvent<HTMLFormElement>,
@@ -1625,7 +1615,7 @@ export function PrivateApp({
   async function createCredential(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form);const response=await fetch("/api/credentials",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:data.get("name"),username:data.get("username"),password:data.get("password")})});if(response.ok){form.reset();setCredentialError("");setCredentials(await (await fetch("/api/credentials")).json());}else setCredentialError((await response.json()).error??"Unable to save credential");}
   async function deleteCredential(item:StoredCredential){if(!confirm(`Delete credential ${item.name}?`))return;const response=await fetch(`/api/credentials/${item.id}`,{method:"DELETE"});if(response.ok)setCredentials(current=>current.filter(value=>value.id!==item.id));else setCredentialError((await response.json()).error??"Unable to delete credential");}
   function toggleInterfaces(deviceId: string) {
-    setExpandedDevice((current) => (current === deviceId ? null : deviceId));
+    setExpandedDevices(current=>current.includes(deviceId)?current.filter(id=>id!==deviceId):[...current,deviceId]);
   }
   async function createGroup() {
     const name = newGroupName.trim();
@@ -2129,7 +2119,7 @@ export function PrivateApp({
                                   <ArrowRight size={16} />
                                 </button>
                                 <button
-                                  className={`expand-button ${expandedDevice === device.id ? "open" : ""}`}
+                                  className={`expand-button ${expandedDevices.includes(device.id) ? "open" : ""}`}
                                   onClick={() =>
                                     void toggleInterfaces(device.id)
                                   }
@@ -2140,7 +2130,7 @@ export function PrivateApp({
                               </div>
                             </td>
                           </tr>
-                          {expandedDevice === device.id && (
+                          {expandedDevices.includes(device.id) && (
                             <tr className="interface-detail">
                               <td colSpan={7}>
                                 <section className="availability-strip" aria-label={`30 day availability for ${device.name}`}>
@@ -2418,6 +2408,7 @@ export function PrivateApp({
                         <small>{incidentStatus(item.status)}</small>
                       </button>
                     ))}
+                    {selectedMajor.status!=="resolved"&&incidents.some(item=>item.status!=="resolved"&&!item.majorIncidentId)&&<form className="link-incidents-form" onSubmit={linkMajorIncidents}><fieldset className="task-incident-picker"><legend>Add active incidents</legend>{incidents.filter(item=>item.status!=="resolved"&&!item.majorIncidentId).map(item=><label key={item.id}><input type="checkbox" name="incidentIds" value={item.id}/><span>{item.deviceName}<small>{item.checkName}</small></span></label>)}</fieldset><button className="secondary">Link selected incidents</button></form>}
                   </aside>
                 </div>
               </>
@@ -2679,11 +2670,7 @@ export function PrivateApp({
                     >
                       <div className="mi-groups">
                         {majorIncidents
-                          .filter((major) =>
-                            visibleIncidents.some(
-                              (item) => item.majorIncidentId === major.id,
-                            ),
-                          )
+                          .filter((major) => major.status!=="resolved"&&!major.archivedAt)
                           .map((major) => (
                             <MajorIncidentGroup
                               key={major.id}
@@ -2776,7 +2763,7 @@ export function PrivateApp({
                 )}
                 {incidentSectionTab === "history" && (
                   <>
-                    {majorIncidents.some(item=>item.archivedAt)&&<Panel title="Archived major incidents" subtitle="Resolved major incidents retained for audit and reporting" className="full-panel"><div className="major-list major-list-tab">{majorIncidents.filter(item=>item.archivedAt).map(item=><button key={item.id} onClick={()=>void openMajorIncident(item.id)}><span className={`major-severity ${item.severity}`}>{item.reference}</span><strong>{item.title}</strong><small>Archived {new Date(item.archivedAt!).toLocaleString()}</small><StatusBadge status="resolved"/></button>)}</div></Panel>}
+                    {majorIncidents.some(item=>item.archivedAt)&&<Panel title="Archived major incidents" subtitle="Resolved major incidents retained for audit and reporting" className="full-panel"><div className="major-list major-list-tab archived-major-list">{majorIncidents.filter(item=>item.archivedAt).map(item=><article key={item.id}><button onClick={()=>void openMajorIncident(item.id)}><span className={`major-severity ${item.severity}`}>{item.reference}</span><strong>{item.title}</strong><small>Archived {new Date(item.archivedAt!).toLocaleString()}</small><StatusBadge status="resolved"/></button><a className="report-download" href={`/api/major-incidents/${item.id}/report.pdf`} download><FileText size={14}/> Export PDF</a></article>)}</div></Panel>}
                     {incidentDeviceFilter&&<div className="device-history-filter"><span><History size={15}/> Incident history for <strong>{incidentDeviceFilter.name}</strong></span><button onClick={()=>setIncidentDeviceFilter(null)}>Show all devices</button></div>}
                     <IncidentTimeline
                       incidents={deviceHistory}

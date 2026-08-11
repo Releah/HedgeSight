@@ -11,6 +11,7 @@ import { startStorageMaintenance } from "./maintenance.js";
 import { storageRouter } from "./storage.js";
 import { backupRouter } from "./backups.js";
 import { systemLogsRouter, writeSystemLog } from "./systemLogs.js";
+import { reportRouter } from "./reports.js";
 
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const port = Number(process.env.APP_PORT ?? 8080);
@@ -152,6 +153,7 @@ app.use("/api", requireUser);
 app.use("/api", storageRouter);
 app.use("/api", backupRouter);
 app.use("/api", systemLogsRouter);
+app.use("/api",reportRouter);
 
 function requireAdmin(request: express.Request, response: express.Response): boolean {
   if (response.locals.user?.role === "admin") return true;
@@ -380,7 +382,7 @@ app.post("/api/major-incidents",async(request,response)=>{
   const client=await pool.connect();try{await client.query("BEGIN");const result=await client.query(`INSERT INTO major_incidents(title,impact,severity,owner_user_id,created_by_user_id) VALUES($1,$2,$3,$4,$4) RETURNING id`,[parsed.data.title,parsed.data.impact,parsed.data.severity,response.locals.user.id]);for(const id of parsed.data.incidentIds)await client.query(`INSERT INTO major_incident_members(major_incident_id,incident_id) VALUES($1,$2) ON CONFLICT(incident_id) DO UPDATE SET major_incident_id=EXCLUDED.major_incident_id`,[result.rows[0].id,id]);await client.query("COMMIT");return response.status(201).json(result.rows[0]);}catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}
 });
 app.post("/api/major-incidents/:majorId/updates",async(request,response)=>{const parsed=z.object({body:z.string().trim().min(1).max(4000)}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Update is required"});const result=await pool.query(`INSERT INTO major_incident_updates(major_incident_id,user_id,body) VALUES($1,$2,$3) RETURNING id`,[request.params.majorId,response.locals.user.id,parsed.data.body]);return response.status(201).json(result.rows[0]);});
-app.post("/api/major-incidents/:majorId/members",async(request,response)=>{const parsed=z.object({incidentIds:z.array(z.string().uuid())}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Invalid incidents"});for(const id of parsed.data.incidentIds)await pool.query(`INSERT INTO major_incident_members(major_incident_id,incident_id) VALUES($1,$2) ON CONFLICT(incident_id) DO UPDATE SET major_incident_id=EXCLUDED.major_incident_id`,[request.params.majorId,id]);return response.json({linked:parsed.data.incidentIds.length});});
+app.post("/api/major-incidents/:majorId/members",async(request,response)=>{const parsed=z.object({incidentIds:z.array(z.string().uuid())}).safeParse(request.body);if(!parsed.success)return response.status(400).json({error:"Invalid incidents"});let linked=0;for(const id of parsed.data.incidentIds){const result=await pool.query(`INSERT INTO major_incident_members(major_incident_id,incident_id) SELECT $1,i.id FROM incidents i WHERE i.id=$2 AND i.status<>'resolved' AND EXISTS(SELECT 1 FROM major_incidents m WHERE m.id=$1 AND m.status<>'resolved' AND m.archived_at IS NULL) ON CONFLICT(incident_id) DO UPDATE SET major_incident_id=EXCLUDED.major_incident_id RETURNING incident_id`,[request.params.majorId,id]);linked+=result.rowCount??0;}if(!linked)return response.status(409).json({error:"Only active incidents can be linked to an open major incident"});return response.json({linked});});
 app.post("/api/major-incidents/:majorId/resolve",async(request,response)=>{await pool.query("UPDATE major_incidents SET status='resolved',resolved_at=now() WHERE id=$1",[request.params.majorId]);return response.json({resolved:true});});
 app.post("/api/major-incidents/:majorId/archive",async(request,response)=>{if(!requireOperator(response))return;const result=await pool.query(`UPDATE major_incidents SET archived_at=now(),archived_by_user_id=$2 WHERE id=$1 AND status='resolved' AND archived_at IS NULL RETURNING id`,[request.params.majorId,response.locals.user.id]);if(!result.rowCount)return response.status(409).json({error:"Only a resolved, unarchived major incident can be archived"});response.json({archived:true});});
 app.post("/api/major-incidents/:majorId/resolve-all",async(request,response)=>{
