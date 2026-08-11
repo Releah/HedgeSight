@@ -293,9 +293,9 @@ const pageCopy: Record<
   backups:{eyebrow:"CONFIGURATION PROTECTION",title:"Backups",description:"Schedule and verify encrypted network and server backups."},
   logs:{eyebrow:"OBSERVABILITY",title:"Logs",description:"Search platform activity, collector failures and diagnostic events."},
   workers: {
-    eyebrow: "POLLING",
-    title: "Workers",
-    description: "Monitor the nodes executing checks across your networks.",
+    eyebrow: "CONTROL PLANE",
+    title: "Platform",
+    description: "Inspect the HedgeSight application, database and execution nodes.",
   },
   settings: {
     eyebrow: "CONTROL PLANE",
@@ -476,10 +476,13 @@ function WorkerList({ summary }: { summary: DashboardSummary }) {
   );
 }
 function InfrastructureTopology({summary}:{summary:DashboardSummary}){
+  type DatabaseTable={schema:string;name:string;estimatedRows:string;totalBytes:string;dataBytes:string;indexBytes:string};
+  const [tables,setTables]=useState<DatabaseTable[]|null>(null),[tableLoading,setTableLoading]=useState(false),[tableError,setTableError]=useState("");
   const {application,database}=summary.infrastructure;
   const bytes=(value:number|string)=>{const amount=Number(value);if(!amount)return "0 MB";if(amount>=1_073_741_824)return `${(amount/1_073_741_824).toFixed(1)} GB`;return `${(amount/1_048_576).toFixed(1)} MB`;};
   const percent=(value:number)=>`${Number(value||0).toFixed(1)}%`;
-  return <div className="topology-shell">
+  async function inspectDatabase(){setTableLoading(true);setTableError("");try{const response=await fetch("/api/platform/database-tables");const payload=await response.json();if(!response.ok)throw new Error(payload.error??"Unable to inspect database tables");setTables(payload.tables);}catch(error){setTableError(error instanceof Error?error.message:"Unable to inspect database tables");setTables([]);}finally{setTableLoading(false);}}
+  return <><div className="topology-shell">
     <div className="topology-live"><span className="pulse"/><strong>LIVE</strong><small>Updated {relativeTime(summary.infrastructure.sampledAt)}</small></div>
     <div className="topology-map">
       <article className="topology-node topology-app">
@@ -490,6 +493,7 @@ function InfrastructureTopology({summary}:{summary:DashboardSummary}){
       <article className="topology-node topology-db">
         <div className="topology-node-head"><span><Database size={20}/></span><div><small>DATA STORE</small><h3>PostgreSQL</h3><p>{database.hostname}</p></div><StatusBadge status="up"/></div>
         <dl><div><dt>DATABASE SIZE</dt><dd>{bytes(database.sizeBytes)}</dd></div><div><dt>CONNECTIONS</dt><dd>{database.activeConnections} <small>/ {database.maxConnections}</small></dd></div><div><dt>TRANSACTIONS</dt><dd>{Number(database.transactions).toLocaleString()}</dd></div><div><dt>CACHE HIT</dt><dd>{percent(database.cacheHitPercent)}</dd></div></dl>
+        <button className="topology-inspect" onClick={()=>void inspectDatabase()} disabled={tableLoading}><Search size={14}/>{tableLoading?"Inspecting…":"Inspect table usage"}</button>
       </article>
       <div className="topology-link topology-worker-link"><span>HTTPS · outbound</span></div>
       <section className="topology-workers">
@@ -502,7 +506,7 @@ function InfrastructureTopology({summary}:{summary:DashboardSummary}){
       </section>
     </div>
     <div className="topology-note"><ShieldCheck size={17}/><span>Workers connect outbound to the application API. Database credentials and direct database access remain isolated to the application.</span></div>
-  </div>;
+  </div>{tables!==null&&<div className="modal-backdrop" onMouseDown={()=>setTables(null)}><section className="modal wide-modal database-inspector" role="dialog" aria-modal="true" aria-labelledby="database-inspector-title" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setTables(null)} aria-label="Close database inspection"><X/></button><p className="eyebrow">POSTGRESQL STORAGE</p><h2 id="database-inspector-title">Database table usage</h2><p>Physical storage used by HedgeSight tables and their indexes, largest first.</p>{tableError&&<div className="error">{tableError}</div>}<div className="database-inspector-summary"><article><small>DATABASE</small><strong>{bytes(database.sizeBytes)}</strong></article><article><small>USER TABLES</small><strong>{tables.length}</strong></article><article><small>TABLE STORAGE</small><strong>{bytes(tables.reduce((total,item)=>total+Number(item.totalBytes),0))}</strong></article></div><div className="table-wrap"><table><thead><tr><th>TABLE</th><th>EST. ROWS</th><th>DATA</th><th>INDEXES</th><th>TOTAL</th></tr></thead><tbody>{tables.map(item=>{const largest=Number(tables[0]?.totalBytes??1);return <tr key={`${item.schema}.${item.name}`}><td><strong>{item.name}</strong><small className="account-email">{item.schema}</small><i className="database-size-bar" style={{width:`${Math.max(2,Number(item.totalBytes)/largest*100)}%`}}/></td><td>{Number(item.estimatedRows).toLocaleString()}</td><td>{bytes(item.dataBytes)}</td><td>{bytes(item.indexBytes)}</td><td><strong>{bytes(item.totalBytes)}</strong></td></tr>})}{!tables.length&&!tableError&&<tr><td colSpan={5} className="empty-row">No user tables were found.</td></tr>}</tbody></table></div></section></div>}</>;
 }
 function IncidentList({
   summary,
@@ -1922,7 +1926,7 @@ export function PrivateApp({
           {nav("maintenance", <CalendarClock />, "Maintenance", <span className="nav-count">{changes.filter(item=>item.status!=="completed").length}</span>)}
           {nav("backups", <HardDriveDownload />, "Backups")}
           {nav("logs", <FileText />, "Logs")}
-          {nav("workers", <Box />, "Workers")}
+          {nav("workers", <Box />, "Platform")}
         </nav>
         <div className="sidebar-bottom">
           {nav("settings", <Settings />, "Settings")}

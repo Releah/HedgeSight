@@ -287,6 +287,13 @@ app.get("/api/dashboard", async (_request, response) => {
     infrastructure:{sampledAt:new Date().toISOString(),application:{version,uptimeSeconds:Math.round(process.uptime()),memoryBytes:process.memoryUsage().rss,memoryUsedPercent:Number((usedMemory/totalMemory*100).toFixed(1)),load1:Number(loadavg()[0].toFixed(2)),cpuCount:cpus().length,hostname:hostname()},database:databaseRuntime.rows[0]} });
 });
 
+app.get("/api/platform/database-tables",async(_request,response)=>{
+  const result=await pool.query(`SELECT schemaname AS schema,relname AS name,n_live_tup::text AS "estimatedRows",
+    pg_total_relation_size(relid)::text AS "totalBytes",pg_relation_size(relid)::text AS "dataBytes",pg_indexes_size(relid)::text AS "indexBytes"
+    FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC,schemaname,relname`);
+  response.json({sampledAt:new Date().toISOString(),tables:result.rows});
+});
+
 app.get("/api/incidents",async(_request,response)=>{
   const result=await pool.query(`SELECT i.id,i.status,i.priority,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",i.archived_at AS "archivedAt",
     d.id AS "deviceId",d.name AS "deviceName",d.address,d.status AS "deviceStatus",c.name AS "checkName",c.kind AS "checkKind",
