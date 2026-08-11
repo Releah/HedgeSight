@@ -259,6 +259,7 @@ const empty: DashboardSummary = {
   maintenanceCount: 0,
   devices: [],
   workers: [],
+  infrastructure:{sampledAt:new Date(0).toISOString(),application:{version:"—",uptimeSeconds:0,memoryBytes:0,memoryUsedPercent:0,load1:0,cpuCount:0,hostname:"—"},database:{sizeBytes:"0",activeConnections:0,maxConnections:0,transactions:"0",cacheHitPercent:0,hostname:"—"}},
   recentIncidents: [],
   activeChanges: [],
 };
@@ -473,6 +474,35 @@ function WorkerList({ summary }: { summary: DashboardSummary }) {
       </div>
     </>
   );
+}
+function InfrastructureTopology({summary}:{summary:DashboardSummary}){
+  const {application,database}=summary.infrastructure;
+  const bytes=(value:number|string)=>{const amount=Number(value);if(!amount)return "0 MB";if(amount>=1_073_741_824)return `${(amount/1_073_741_824).toFixed(1)} GB`;return `${(amount/1_048_576).toFixed(1)} MB`;};
+  const percent=(value:number)=>`${Number(value||0).toFixed(1)}%`;
+  return <div className="topology-shell">
+    <div className="topology-live"><span className="pulse"/><strong>LIVE</strong><small>Updated {relativeTime(summary.infrastructure.sampledAt)}</small></div>
+    <div className="topology-map">
+      <article className="topology-node topology-app">
+        <div className="topology-node-head"><span><Server size={20}/></span><div><small>APPLICATION</small><h3>HedgeSight App</h3><p>{application.hostname} · v{application.version}</p></div><StatusBadge status="up"/></div>
+        <dl><div><dt>HOST LOAD</dt><dd>{application.load1.toFixed(2)} <small>/ {application.cpuCount} CPU</small></dd></div><div><dt>HOST MEMORY</dt><dd>{percent(application.memoryUsedPercent)}</dd></div><div><dt>APP MEMORY</dt><dd>{bytes(application.memoryBytes)}</dd></div><div><dt>APP UPTIME</dt><dd>{availabilityDuration(String(application.uptimeSeconds))}</dd></div></dl>
+      </article>
+      <div className="topology-link topology-db-link"><span>PostgreSQL</span></div>
+      <article className="topology-node topology-db">
+        <div className="topology-node-head"><span><Database size={20}/></span><div><small>DATA STORE</small><h3>PostgreSQL</h3><p>{database.hostname}</p></div><StatusBadge status="up"/></div>
+        <dl><div><dt>DATABASE SIZE</dt><dd>{bytes(database.sizeBytes)}</dd></div><div><dt>CONNECTIONS</dt><dd>{database.activeConnections} <small>/ {database.maxConnections}</small></dd></div><div><dt>TRANSACTIONS</dt><dd>{Number(database.transactions).toLocaleString()}</dd></div><div><dt>CACHE HIT</dt><dd>{percent(database.cacheHitPercent)}</dd></div></dl>
+      </article>
+      <div className="topology-link topology-worker-link"><span>HTTPS · outbound</span></div>
+      <section className="topology-workers">
+        {summary.workers.map(worker=>{const metrics=worker.runtimeMetrics as Record<string,unknown>;return <article className={`topology-node topology-worker ${worker.status}`} key={worker.id}>
+          <div className="topology-node-head"><span><Box size={19}/></span><div><small>EXECUTION NODE</small><h3>{worker.name}</h3><p>{String(metrics.hostname??"Host unknown")} · v{worker.version}</p></div><StatusBadge status={worker.status==="online"?"up":"down"}/></div>
+          <dl><div><dt>LOAD</dt><dd>{Number(metrics.load1??0).toFixed(2)} <small>/ {String(metrics.cpuCount??"—")} CPU</small></dd></div><div><dt>MEMORY</dt><dd>{percent(Number(metrics.memoryUsedPercent??0))}</dd></div><div><dt>UPTIME</dt><dd>{availabilityDuration(String(metrics.uptimeSeconds??0))}</dd></div><div><dt>LAST HEARTBEAT</dt><dd>{relativeTime(worker.lastSeenAt)}</dd></div></dl>
+          <div className="topology-capabilities">{worker.capabilities.map(item=><span key={item}>{item}</span>)}</div>
+        </article>})}
+        {!summary.workers.length&&<div className="topology-empty"><Box/><strong>No workers connected</strong><small>Waiting for an authenticated worker heartbeat.</small></div>}
+      </section>
+    </div>
+    <div className="topology-note"><ShieldCheck size={17}/><span>Workers connect outbound to the application API. Database credentials and direct database access remain isolated to the application.</span></div>
+  </div>;
 }
 function IncidentList({
   summary,
@@ -2821,11 +2851,11 @@ export function PrivateApp({
         {view === "workers" && (
           <section className="page-grid">
             <Panel
-              title="Polling workers"
-              subtitle={`${summary.workers.length} registered execution node${summary.workers.length === 1 ? "" : "s"}`}
+              title="HedgeSight topology"
+              subtitle={`Live application, database and ${summary.workers.length} registered execution node${summary.workers.length === 1 ? "" : "s"}`}
               className="full-panel"
             >
-              <WorkerList summary={summary} />
+              <InfrastructureTopology summary={summary}/>
             </Panel>
             <div className="info-strip">
               <Activity />

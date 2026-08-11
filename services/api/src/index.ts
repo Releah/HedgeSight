@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { cpus, freemem, hostname, loadavg, totalmem } from "node:os";
 import express from "express";
 import helmet from "helmet";
 import * as oidc from "openid-client";
@@ -249,13 +250,13 @@ app.put("/api/settings/authentication/oidc",async(request,response)=>{
 });
 
 app.get("/api/dashboard", async (_request, response) => {
-  const [counts, devices, workers, incidents, changes] = await Promise.all([
+  const [counts, devices, workers, incidents, changes, databaseRuntime] = await Promise.all([
     pool.query(`SELECT CASE WHEN active.device_id IS NOT NULL THEN 'maintenance' ELSE d.status END AS status,count(*)::int AS count
       FROM devices d LEFT JOIN (SELECT DISTINCT m.device_id FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now()) active ON active.device_id=d.id GROUP BY 1`),
     pool.query(`SELECT d.id, d.name, d.address, d.status, d.last_seen_at AS "lastSeenAt",
       count(c.id)::int AS checks FROM devices d LEFT JOIN checks c ON c.device_id = d.id
       GROUP BY d.id ORDER BY d.name`),
-    pool.query(`SELECT id, name, version, last_seen_at AS "lastSeenAt",
+    pool.query(`SELECT id, name, version, capabilities, runtime_metrics AS "runtimeMetrics",last_seen_at AS "lastSeenAt",
       CASE WHEN last_seen_at > now() - interval '60 seconds' THEN 'online' ELSE 'offline' END AS status
       FROM workers ORDER BY name`),
     pool.query(`SELECT i.id, d.name AS "deviceName", c.name AS "checkName", i.status,
@@ -271,11 +272,19 @@ app.get("/api/dashboard", async (_request, response) => {
       count(m.device_id)::int AS "deviceCount",array_agg(d.name ORDER BY d.name) AS "deviceNames"
       FROM change_records r JOIN users u ON u.id=r.change_manager_user_id JOIN change_record_devices m ON m.change_record_id=r.id AND m.ended_at IS NULL
       JOIN devices d ON d.id=m.device_id WHERE r.ended_at IS NULL GROUP BY r.id,u.id ORDER BY r.started_at DESC`),
+    pool.query(`SELECT pg_database_size(current_database())::text AS "sizeBytes",
+      count(*) FILTER (WHERE datname=current_database())::int AS "activeConnections",
+      current_setting('max_connections')::int AS "maxConnections",
+      COALESCE((SELECT xact_commit+xact_rollback FROM pg_stat_database WHERE datname=current_database()),0)::text AS transactions,
+      COALESCE((SELECT round(100*blks_hit::numeric/NULLIF(blks_hit+blks_read,0),1) FROM pg_stat_database WHERE datname=current_database()),100)::float AS "cacheHitPercent",
+      COALESCE(inet_server_addr()::text,'local') AS hostname FROM pg_stat_activity`),
   ]);
   const summary = { up: 0, down: 0, degraded: 0, monitoring_error:0, unknown: 0 };
   let maintenanceCount=0;
   for (const row of counts.rows) { if(row.status==="maintenance") maintenanceCount=row.count; else summary[row.status as keyof typeof summary] = row.count; }
-  response.json({ counts: summary, maintenanceCount, devices: devices.rows, workers: workers.rows, recentIncidents: incidents.rows, activeChanges:changes.rows });
+  const totalMemory=totalmem(),usedMemory=totalMemory-freemem();
+  response.json({ counts: summary, maintenanceCount, devices: devices.rows, workers: workers.rows, recentIncidents: incidents.rows, activeChanges:changes.rows,
+    infrastructure:{sampledAt:new Date().toISOString(),application:{version,uptimeSeconds:Math.round(process.uptime()),memoryBytes:process.memoryUsage().rss,memoryUsedPercent:Number((usedMemory/totalMemory*100).toFixed(1)),load1:Number(loadavg()[0].toFixed(2)),cpuCount:cpus().length,hostname:hostname()},database:databaseRuntime.rows[0]} });
 });
 
 app.get("/api/incidents",async(_request,response)=>{
@@ -608,13 +617,13 @@ app.post("/api/devices/:deviceId/checks", async (request, response) => {
 
 app.post("/api/workers/lease", async (request, response) => {
   if (!validToken(request)) return response.status(401).json({ error: "Invalid worker token" });
-  const body = z.object({ name: z.string().min(1).max(120), version: z.string(), capabilities: z.array(z.string()) }).parse(request.body);
+  const body = z.object({ name: z.string().min(1).max(120), version: z.string(), capabilities: z.array(z.string()),runtimeMetrics:z.object({hostname:z.string().max(255),platform:z.string().max(80),platformVersion:z.string().max(255),cpuCount:z.number().int().positive(),load1:z.number().nonnegative(),memoryBytes:z.string(),memoryUsedPercent:z.number().min(0).max(100),uptimeSeconds:z.number().nonnegative()}).default({hostname:"unknown",platform:"unknown",platformVersion:"unknown",cpuCount:1,load1:0,memoryBytes:"0",memoryUsedPercent:0,uptimeSeconds:0}) }).parse(request.body);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const worker = await client.query(`INSERT INTO workers(name, token_hash, version, capabilities, last_seen_at)
-      VALUES ($1,$2,$3,$4,now()) ON CONFLICT(name) DO UPDATE SET version=$3, capabilities=$4, last_seen_at=now()
-      RETURNING id`, [body.name, hashToken(process.env.WORKER_TOKEN ?? "local-development-token"), body.version, body.capabilities]);
+    const worker = await client.query(`INSERT INTO workers(name, token_hash, version, capabilities, runtime_metrics, last_seen_at)
+      VALUES ($1,$2,$3,$4,$5,now()) ON CONFLICT(name) DO UPDATE SET version=$3, capabilities=$4, runtime_metrics=$5,last_seen_at=now()
+      RETURNING id`, [body.name, hashToken(process.env.WORKER_TOKEN ?? "local-development-token"), body.version, body.capabilities,body.runtimeMetrics]);
     await client.query("UPDATE probe_jobs SET state='expired' WHERE state='leased' AND leased_until < now()");
     await client.query("UPDATE probe_jobs SET state='queued', worker_id=NULL, leased_until=NULL WHERE state='expired'");
     const job = await client.query(`WITH candidate AS (

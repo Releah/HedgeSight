@@ -81,7 +81,14 @@ export interface DashboardSummary {
     version: string;
     status: "online" | "offline";
     lastSeenAt: string;
+    capabilities: string[];
+    runtimeMetrics: Record<string, unknown>;
   }>;
+  infrastructure: {
+    sampledAt: string;
+    application: { version: string; uptimeSeconds: number; memoryBytes: number; memoryUsedPercent: number; load1: number; cpuCount: number; hostname: string };
+    database: { sizeBytes: string; activeConnections: number; maxConnections: number; transactions: string; cacheHitPercent: number; hostname: string };
+  };
   recentIncidents: Array<{
     id: string;
     deviceName: string;

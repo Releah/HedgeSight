@@ -1,4 +1,5 @@
 import type { ProbeJob } from "@hedgesight/contracts";
+import { cpus, freemem, hostname, loadavg, platform, release, totalmem, uptime } from "node:os";
 import { executeProbe } from "./probes.js";
 import { collectBackup,leaseBackup,submitBackup } from "./backups.js";
 
@@ -8,13 +9,14 @@ const workerName = process.env.WORKER_NAME ?? `worker-${process.pid}`;
 const version = process.env.HEDGESIGHT_VERSION ?? "0.1.0-dev";
 const pollInterval = Number(process.env.JOB_POLL_INTERVAL_MS ?? 3000);
 const capabilities = ["ping", "http", "ssh", "vsphere"];
+function runtimeMetrics(){const total=totalmem(),free=freemem();return {hostname:hostname(),platform:platform(),platformVersion:release(),cpuCount:cpus().length,load1:Number(loadavg()[0].toFixed(2)),memoryBytes:String(total),memoryUsedPercent:Number((((total-free)/total)*100).toFixed(1)),uptimeSeconds:Math.round(uptime())};}
 async function log(level:"debug"|"info"|"warn"|"error",category:string,message:string,context:Record<string,unknown>={}){try{await fetch(`${apiUrl}/api/workers/system-logs`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({level,source:workerName,category,message,context})});}catch{/* Console remains the final fallback. */}}
 
 async function lease(): Promise<ProbeJob | null> {
   const response = await fetch(`${apiUrl}/api/workers/lease`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ name: workerName, version, capabilities }),
+    body: JSON.stringify({ name: workerName, version, capabilities, runtimeMetrics:runtimeMetrics() }),
   });
   if (response.status === 204) return null;
   if (!response.ok) throw new Error(`Lease request failed with HTTP ${response.status}`);
