@@ -33,13 +33,13 @@ app.get("/api/version", (_request, response) => {
 });
 
 const credentialsSchema = z.object({ email: z.string().trim().email().max(254).transform(value => value.toLowerCase()), password: z.string().min(12).max(256) });
-type OidcRuntimeSettings = { enabled:boolean;issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
+type OidcRuntimeSettings = { enabled:boolean;localAccountsEnabled:boolean;issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
 async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
-  const result=await pool.query(`SELECT enabled,issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
+  const result=await pool.query(`SELECT enabled,local_accounts_enabled AS "localAccountsEnabled",issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
     CASE WHEN client_secret_encrypted IS NULL THEN NULL ELSE pgp_sym_decrypt(client_secret_encrypted,$1) END AS "clientSecret" FROM oidc_settings WHERE singleton=true`,[key]);
   if(result.rowCount)return {...result.rows[0],source:"database"};
-  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
+  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
 }
 let oidcConfiguration: { key:string; value:Promise<oidc.Configuration> } | null = null;
 function getOidcConfiguration(settings:OidcRuntimeSettings) {
@@ -51,7 +51,7 @@ function getOidcConfiguration(settings:OidcRuntimeSettings) {
 
 app.get("/api/auth/status", async (_request, response) => {
   const [result,oidcSettings] = await Promise.all([pool.query("SELECT EXISTS(SELECT 1 FROM users) AS configured"),loadOidcSettings()]);
-  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcSettings.enabled });
+  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcSettings.enabled, localAccountsEnabled: oidcSettings.localAccountsEnabled });
 });
 
 const databaseSetupSchema=z.object({connectionString:z.string().trim().min(1).max(4000)});
@@ -81,6 +81,7 @@ app.post("/api/auth/setup", async (request, response) => {
 });
 
 app.post("/api/auth/login", async (request, response) => {
+  if (!(await loadOidcSettings()).localAccountsEnabled) return response.status(403).json({ error: "Local sign-in is disabled" });
   const parsed = credentialsSchema.safeParse(request.body);
   if (!parsed.success) return response.status(401).json({ error: "Invalid email or password" });
   const result = await pool.query("SELECT id,password_hash FROM users WHERE email=$1 AND enabled=true", [parsed.data.email]);
@@ -223,7 +224,7 @@ app.get("/api/settings/authentication", async (request, response) => {
   if (!requireAdmin(request, response)) return;
   const settings=await loadOidcSettings();
   response.json({
-    localAccountsEnabled: true,
+    localAccountsEnabled: settings.localAccountsEnabled,
     oidc: { enabled: settings.enabled, issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
     sessionDays: Math.max(1, Number(process.env.SESSION_DAYS ?? 7)), cookieSecure: process.env.COOKIE_SECURE === "true", trustProxy: process.env.TRUST_PROXY === "true",
   });
@@ -231,15 +232,16 @@ app.get("/api/settings/authentication", async (request, response) => {
 
 app.put("/api/settings/authentication/oidc",async(request,response)=>{
   if(!requireAdmin(request,response))return;
-  const parsed=z.object({enabled:z.boolean(),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
+  const parsed=z.object({enabled:z.boolean(),localAccountsEnabled:z.boolean().default(true),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
   if(!parsed.success)return response.status(400).json({error:"Enter valid issuer and callback URLs"});
   if(parsed.data.enabled&&(!parsed.data.issuerUrl||!parsed.data.clientId||!parsed.data.redirectUri))return response.status(400).json({error:"Issuer URL, client ID and callback URL are required when OIDC is enabled"});
+  if(!parsed.data.localAccountsEnabled&&!parsed.data.enabled)return response.status(400).json({error:"Enable and configure OIDC before disabling local sign-in"});
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
-  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
-    VALUES(true,$1,NULLIF($2,''),NULLIF($3,''),CASE WHEN $4='' THEN NULL ELSE pgp_sym_encrypt($4,$5) END,NULLIF($6,''),$7)
-    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
-    client_secret_encrypted=CASE WHEN $4='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
-    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
+  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,local_accounts_enabled,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
+    VALUES(true,$1,$2,NULLIF($3,''),NULLIF($4,''),CASE WHEN $5='' THEN NULL ELSE pgp_sym_encrypt($5,$6) END,NULLIF($7,''),$8)
+    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,local_accounts_enabled=EXCLUDED.local_accounts_enabled,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
+    client_secret_encrypted=CASE WHEN $5='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
+    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.localAccountsEnabled,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
   oidcConfiguration=null;
   return response.json({saved:true});
 });

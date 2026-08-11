@@ -854,7 +854,7 @@ function IncidentHistoryTable({
   );
 }
 
-type AuthStatus = { setupRequired: boolean; oidcEnabled: boolean };
+type AuthStatus = { setupRequired: boolean; oidcEnabled: boolean; localAccountsEnabled: boolean };
 type AuthUser = {
   id: string;
   email: string;
@@ -1040,7 +1040,7 @@ function Login({
         {error && <div className="error">{error}</div>}
         {status.setupRequired&&<button className="database-setup-toggle" onClick={()=>setDatabaseSetup(value=>!value)}><Database size={15}/>{databaseSetup?"Use bundled database":"Use remote PostgreSQL"}</button>}
         {status.setupRequired&&databaseSetup?<form onSubmit={configureDatabase} className="database-setup-form"><label>PostgreSQL connection URL<input name="connectionString" type="password" required placeholder="postgresql://user:password@db.example.com:5432/hedgesight" autoComplete="off"/></label><small>HedgeSight will test the connection, create its schema, store the URL securely, and restart.</small><button className="primary" disabled={databaseBusy}>{databaseBusy?"Connecting…":"Connect database"}<ArrowRight size={16}/></button></form>:
-        <form onSubmit={submit}>
+        (status.setupRequired || status.localAccountsEnabled) && <form onSubmit={submit}>
           {status.setupRequired && (
             <label>
               Display name
@@ -1067,9 +1067,9 @@ function Login({
         </form>}
         {status.oidcEnabled && !status.setupRequired && (
           <>
-            <div className="login-divider">
+            {status.localAccountsEnabled && <div className="login-divider">
               <span>or</span>
-            </div>
+            </div>}
             <a className="oidc-button" href="/api/auth/oidc/start">
               Continue with single sign-on
             </a>
@@ -1660,6 +1660,7 @@ export function PrivateApp({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         enabled: data.get("enabled") === "on",
+        localAccountsEnabled: data.get("localAccountsEnabled") === "on",
         issuerUrl: data.get("issuerUrl"),
         clientId: data.get("clientId"),
         clientSecret: data.get("clientSecret"),
@@ -3154,6 +3155,14 @@ export function PrivateApp({
                     className="full-panel"
                   >
                     <form className="oidc-form" onSubmit={saveOidc}>
+                      <label className="toggle-label">
+                        <input
+                          type="checkbox"
+                          name="localAccountsEnabled"
+                          defaultChecked={authenticationSettings?.localAccountsEnabled ?? true}
+                        />{" "}
+                        Allow local username and password sign-in
+                      </label>
                       <label className="toggle-label">
                         <input
                           type="checkbox"
