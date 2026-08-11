@@ -33,6 +33,7 @@ app.get("/api/version", (_request, response) => {
 });
 
 const credentialsSchema = z.object({ email: z.string().trim().email().max(254).transform(value => value.toLowerCase()), password: z.string().min(12).max(256) });
+const loginSchema = z.object({ identifier: z.string().trim().min(1).max(254), password: z.string().min(12).max(256) });
 type OidcRuntimeSettings = { enabled:boolean;localAccountsEnabled:boolean;issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
 async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
@@ -82,11 +83,12 @@ app.post("/api/auth/setup", async (request, response) => {
 
 app.post("/api/auth/login", async (request, response) => {
   if (!(await loadOidcSettings()).localAccountsEnabled) return response.status(403).json({ error: "Local sign-in is disabled" });
-  const parsed = credentialsSchema.safeParse(request.body);
-  if (!parsed.success) return response.status(401).json({ error: "Invalid email or password" });
-  const result = await pool.query("SELECT id,password_hash FROM users WHERE email=$1 AND enabled=true", [parsed.data.email]);
-  const valid = result.rowCount && result.rows[0].password_hash && await passwordMatches(parsed.data.password, result.rows[0].password_hash);
-  if (!valid) return response.status(401).json({ error: "Invalid email or password" });
+  const parsed = loginSchema.safeParse(request.body);
+  if (!parsed.success) return response.status(401).json({ error: "Invalid account name, email or password" });
+  const result = await pool.query(`SELECT id,password_hash FROM users
+    WHERE enabled=true AND (lower(email)=lower($1) OR lower(display_name)=lower($1)) LIMIT 2`, [parsed.data.identifier]);
+  const valid = result.rowCount === 1 && result.rows[0].password_hash && await passwordMatches(parsed.data.password, result.rows[0].password_hash);
+  if (!valid) return response.status(401).json({ error: "Invalid account name, email or password" });
   await pool.query("UPDATE users SET last_login_at=now() WHERE id=$1", [result.rows[0].id]);
   await createSession(request, response, result.rows[0].id);
   return response.json({ authenticated: true });

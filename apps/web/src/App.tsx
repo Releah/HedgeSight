@@ -995,7 +995,7 @@ function Login({
           email: data.get("email"),
           password: data.get("password"),
         }
-      : { email: data.get("email"), password: data.get("password") };
+      : { identifier: data.get("identifier"), password: data.get("password") };
     const response = await fetch(`/api/auth/${endpoint}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1048,12 +1048,13 @@ function Login({
             </label>
           )}
           <label>
-            Email address
+            {status.setupRequired ? "Email address" : "Account name or email address"}
             <input
-              name="email"
-              type="email"
+              name={status.setupRequired ? "email" : "identifier"}
+              type={status.setupRequired ? "email" : "text"}
               required
               autoFocus={!status.setupRequired}
+              autoComplete="username"
             />
           </label>
           <label>
