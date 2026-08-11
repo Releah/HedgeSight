@@ -102,7 +102,9 @@ type ChangeManager = { id:string;displayName:string;email:string };
 type ChangeRecord={id:string;changeReference:string;publicDescription:string;managerId:string;managerName:string;startedAt:string;estimatedEndAt:string;endedAt:string|null;deviceCount:number;deviceNames:string[];status:"scheduled"|"active"|"overdue"|"completed"};
 type TaskStatus=string;
 type TaskLane={key:string;name:string;position:number;isCompletionLane:boolean};
-type TaskRecord={id:string;title:string;description:string;status:TaskStatus;createdAt:string;updatedAt:string;assigneeId:string|null;assigneeName:string|null;incidentCount:number;updateCount:number};
+type TaskTag={id:string;name:string;color:string};
+type Priority="P1"|"P2"|"P3"|"P4";
+type TaskRecord={id:string;title:string;description:string;status:TaskStatus;priority:Priority;tags:TaskTag[];createdAt:string;updatedAt:string;assigneeId:string|null;assigneeName:string|null;incidentCount:number;updateCount:number};
 type TaskDetail=TaskRecord&{incidents:Array<{id:string;status:string;openedAt:string;deviceName:string}>;updates:Array<{id:string;body:string;createdAt:string;authorName:string}>};
 type InterfaceStats = {
   id: string;
@@ -186,6 +188,7 @@ type AuthenticationSettings = {
 type IncidentRecord = {
   id: string;
   status: "open" | "pending_investigation" | "under_investigation" | "resolved";
+  priority: Priority;
   openedAt: string;
   recoveredAt: string | null;
   resolvedAt: string | null;
@@ -230,6 +233,7 @@ type MajorIncident = {
   status: "open" | "resolved";
   openedAt: string;
   resolvedAt: string | null;
+  archivedAt: string | null;
   ownerName: string | null;
   incidentCount: number;
   updateCount: number;
@@ -667,12 +671,12 @@ function MajorIncidentPanel({
         </button>
       </div>
       <div className="major-list major-list-tab">
-        {majors.length === 0 ? (
+        {majors.filter(item=>!item.archivedAt).length === 0 ? (
           <div className="chat-empty">
             No major incidents have been declared.
           </div>
         ) : (
-          majors.map((item) => (
+          majors.filter(item=>!item.archivedAt).map((item) => (
             <button key={item.id} onClick={() => onOpen(item.id)}>
               <span className={`major-severity ${item.severity}`}>
                 {item.reference}
@@ -1207,8 +1211,8 @@ export function PrivateApp({
   const [selectedMajor, setSelectedMajor] =
     useState<MajorIncidentDetail | null>(null);
   const [incidentSectionTab, setIncidentSectionTab] = useState<
-    "incidents" | "major" | "history" | "metrics"
-  >("incidents");
+    "overview" | "incidents" | "major" | "history"
+  >("overview");
   const [majorDialog, setMajorDialog] = useState(false);
   const [changeDialog,setChangeDialog]=useState(false);
   const [selectedDevices,setSelectedDevices]=useState<string[]>([]);
@@ -1218,6 +1222,10 @@ export function PrivateApp({
   const [changeError,setChangeError]=useState("");
   const [tasks,setTasks]=useState<TaskRecord[]>([]);
   const [taskLanes,setTaskLanes]=useState<TaskLane[]>([]);
+  const [taskTags,setTaskTags]=useState<TaskTag[]>([]);
+  const [laneEditor,setLaneEditor]=useState<{lane:TaskLane|null;name:string}|null>(null);
+  const [tagDialog,setTagDialog]=useState(false);
+  const [classifyingTask,setClassifyingTask]=useState<(TaskRecord&{selectedTagIds?:string[]})|null>(null);
   const [taskAssignees,setTaskAssignees]=useState<ChangeManager[]>([]);
   const [selectedTask,setSelectedTask]=useState<TaskDetail|null>(null);
   const [taskDialog,setTaskDialog]=useState(false);
@@ -1239,7 +1247,7 @@ export function PrivateApp({
         managersResponse,
         changesResponse,
         tasksResponse,
-        assigneesResponse,lanesResponse,
+        assigneesResponse,lanesResponse,tagsResponse,
       ] = await Promise.all([
         fetch("/api/dashboard"),
         fetch("/api/monitoring"),
@@ -1248,7 +1256,7 @@ export function PrivateApp({
         fetch("/api/major-incidents"),
         fetch("/api/change-managers"),
         fetch("/api/changes"),
-        fetch("/api/tasks"),fetch("/api/task-assignees"),fetch("/api/task-lanes"),
+        fetch("/api/tasks"),fetch("/api/task-assignees"),fetch("/api/task-lanes"),fetch("/api/task-tags"),
       ]);
       if (
         !dashboardResponse.ok ||
@@ -1256,7 +1264,7 @@ export function PrivateApp({
         !groupsResponse.ok ||
         !incidentsResponse.ok ||
         !majorResponse.ok
-        || !managersResponse.ok || !changesResponse.ok || !tasksResponse.ok || !assigneesResponse.ok || !lanesResponse.ok
+        || !managersResponse.ok || !changesResponse.ok || !tasksResponse.ok || !assigneesResponse.ok || !lanesResponse.ok || !tagsResponse.ok
       )
         throw new Error("Dashboard is unavailable");
       setSummary(await dashboardResponse.json());
@@ -1266,7 +1274,7 @@ export function PrivateApp({
       setMajorIncidents(await majorResponse.json());
       setChangeManagers(await managersResponse.json());
       setChanges(await changesResponse.json());
-      setTasks(await tasksResponse.json());setTaskAssignees(await assigneesResponse.json());setTaskLanes(await lanesResponse.json());
+      setTasks(await tasksResponse.json());setTaskAssignees(await assigneesResponse.json());setTaskLanes(await lanesResponse.json());setTaskTags(await tagsResponse.json());
       setError("");
     } catch (cause) {
       setError(
@@ -1399,8 +1407,13 @@ export function PrivateApp({
   async function createTask(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form);const response=await fetch("/api/tasks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),assigneeId:data.get("assigneeId")||null,incidentIds:data.getAll("incidentIds")})});if(response.ok){form.reset();setTaskDialog(false);await refresh();}else setTaskError((await response.json()).error??"Unable to create task");}
   async function resolveWithTask(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedIncident)return;const form=event.currentTarget,data=new FormData(form);const resolved=await fetch(`/api/incidents/${selectedIncident.id}/resolve`,{method:"POST"});if(!resolved.ok){setIncidentError((await resolved.json()).error);return;}const created=await fetch("/api/tasks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),assigneeId:data.get("assigneeId")||null,incidentIds:[selectedIncident.id]})});if(created.ok){setIncidentTaskDialog(false);setSelectedIncident(null);await refresh();navigate("tasks");}else setIncidentError((await created.json()).error??"Incident resolved, but task creation failed");}
   async function moveTask(id:string,status:TaskStatus){const previous=tasks;setTasks(current=>current.map(item=>item.id===id?{...item,status}:item));const response=await fetch(`/api/tasks/${id}/status`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({status})});if(!response.ok)setTasks(previous);}
-  async function addTaskLane(){const name=prompt("New lane name");if(!name?.trim())return;const response=await fetch('/api/task-lanes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name})});if(response.ok){const lane=await response.json();setTaskLanes(current=>[...current,lane]);}}
-  async function renameTaskLane(lane:TaskLane){const name=prompt("Lane name",lane.name);if(!name?.trim()||name===lane.name)return;const response=await fetch(`/api/task-lanes/${lane.key}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({name})});if(response.ok)setTaskLanes(current=>current.map(item=>item.key===lane.key?{...item,name}:item));}
+  async function saveTaskLane(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!laneEditor)return;const name=laneEditor.name.trim();if(!name)return;const response=await fetch(laneEditor.lane?`/api/task-lanes/${laneEditor.lane.key}`:'/api/task-lanes',{method:laneEditor.lane?'PUT':'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name})});if(response.ok){const lane=await response.json();setTaskLanes(current=>laneEditor.lane?current.map(item=>item.key===lane.key?lane:item):[...current,lane]);setLaneEditor(null);}}
+  async function reorderTaskLane(index:number,direction:-1|1){const next=[...taskLanes],target=index+direction;if(target<0||target>=next.length)return;[next[index],next[target]]=[next[target],next[index]];setTaskLanes(next);const response=await fetch('/api/task-lane-order',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({keys:next.map(item=>item.key)})});if(!response.ok)await refresh();}
+  async function createTaskTag(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form),response=await fetch('/api/task-tags',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:data.get('name'),color:data.get('color')})});if(response.ok){const tag=await response.json();setTaskTags(current=>[...current,tag]);form.reset();}}
+  async function openTaskClassification(task:TaskRecord){const response=await fetch(`/api/tasks/${task.id}/classification`);if(response.ok){const value=await response.json();setClassifyingTask({...task,priority:value.priority,tags:value.tags,selectedTagIds:value.tags.map((tag:TaskTag)=>tag.id)});}}
+  async function saveTaskClassification(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!classifyingTask)return;const data=new FormData(event.currentTarget),priority=data.get('priority') as Priority,tagIds=data.getAll('tagIds');const response=await fetch(`/api/tasks/${classifyingTask.id}/classification`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({priority,tagIds})});if(response.ok){setClassifyingTask(null);await refresh();}}
+  async function setIncidentPriority(id:string,priority:Priority){const response=await fetch(`/api/incidents/${id}/priority`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({priority})});if(response.ok){if(selectedIncident?.id===id)setSelectedIncident({...selectedIncident,priority});await refresh();}}
+  async function archiveMajorIncident(id:string){const response=await fetch(`/api/major-incidents/${id}/archive`,{method:'POST'});if(response.ok){setSelectedMajor(null);await refresh();}}
   async function saveTask(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const data=new FormData(event.currentTarget);const response=await fetch(`/api/tasks/${selectedTask.id}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),status:data.get("status"),assigneeId:data.get("assigneeId")||null})});if(response.ok){await refresh();await openTask(selectedTask.id);}}
   async function addTaskUpdate(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const form=event.currentTarget,body=new FormData(form).get("body");if((await fetch(`/api/tasks/${selectedTask.id}/updates`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({body})})).ok){form.reset();await openTask(selectedTask.id);await refresh();}}
   async function linkTaskIncidents(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const form=event.currentTarget,incidentIds=new FormData(form).getAll("incidentIds");if(!incidentIds.length)return;if((await fetch(`/api/tasks/${selectedTask.id}/incidents`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({incidentIds})})).ok){form.reset();await openTask(selectedTask.id);await refresh();}}
@@ -2356,6 +2369,7 @@ export function PrivateApp({
                   </Panel>
                   <aside className="incident-actions">
                     <h3>Linked incidents</h3>
+                    {selectedMajor.status==="resolved"&&!selectedMajor.archivedAt&&<button className="secondary archive-major" onClick={()=>void archiveMajorIncident(selectedMajor.id)}><Archive size={14}/> Archive major incident</button>}
                     {selectedMajor.incidents.map((item) => (
                       <button
                         key={item.id}
@@ -2398,6 +2412,7 @@ export function PrivateApp({
                     </div>
                   </div>
                   <div className="incident-hero-state">
+                    <select className={`priority-select ${selectedIncident.priority.toLowerCase()}`} value={selectedIncident.priority} onChange={event=>void setIncidentPriority(selectedIncident.id,event.target.value as Priority)}>{(["P1","P2","P3","P4"] as Priority[]).map(priority=><option key={priority}>{priority}</option>)}</select>
                     <span className={`badge ${selectedIncident.status}`}>
                       <i />
                       {incidentStatus(selectedIncident.status)}
@@ -2569,6 +2584,7 @@ export function PrivateApp({
             ) : (
               <>
                 <div className="incident-section-tabs" role="tablist">
+                  <button className={incidentSectionTab === "overview" ? "active" : ""} onClick={() => setIncidentSectionTab("overview")}>Overview</button>
                   <button
                     className={
                       incidentSectionTab === "incidents" ? "active" : ""
@@ -2595,12 +2611,6 @@ export function PrivateApp({
                     onClick={() => setIncidentSectionTab("history")}
                   >
                     History <span>{archivedIncidents.length}</span>
-                  </button>
-                  <button
-                    className={incidentSectionTab === "metrics" ? "active" : ""}
-                    onClick={() => setIncidentSectionTab("metrics")}
-                  >
-                    Metrics
                   </button>
                 </div>
                 {incidentSectionTab === "incidents" && (
@@ -2660,7 +2670,7 @@ export function PrivateApp({
                           <thead>
                             <tr>
                               <th>DEVICE</th>
-                              <th>EVENT</th>
+                              <th>PRIORITY</th><th>EVENT</th>
                               <th>STATUS</th>
                               <th>INVESTIGATOR</th>
                               <th>UPDATES</th>
@@ -2678,6 +2688,7 @@ export function PrivateApp({
                                       {incident.address}
                                     </small>
                                   </td>
+                                  <td><span className={`priority-badge ${incident.priority.toLowerCase()}`}>{incident.priority}</span></td>
                                   <td>{relativeTime(incident.openedAt)}</td>
                                   <td>
                                     <span
@@ -2728,6 +2739,7 @@ export function PrivateApp({
                 )}
                 {incidentSectionTab === "history" && (
                   <>
+                    {majorIncidents.some(item=>item.archivedAt)&&<Panel title="Archived major incidents" subtitle="Resolved major incidents retained for audit and reporting" className="full-panel"><div className="major-list major-list-tab">{majorIncidents.filter(item=>item.archivedAt).map(item=><button key={item.id} onClick={()=>void openMajorIncident(item.id)}><span className={`major-severity ${item.severity}`}>{item.reference}</span><strong>{item.title}</strong><small>Archived {new Date(item.archivedAt!).toLocaleString()}</small><StatusBadge status="resolved"/></button>)}</div></Panel>}
                     {incidentDeviceFilter&&<div className="device-history-filter"><span><History size={15}/> Incident history for <strong>{incidentDeviceFilter.name}</strong></span><button onClick={()=>setIncidentDeviceFilter(null)}>Show all devices</button></div>}
                     <IncidentTimeline
                       incidents={deviceHistory}
@@ -2749,22 +2761,22 @@ export function PrivateApp({
                     />
                   </>
                 )}
-                {incidentSectionTab === "metrics" && (
+                {incidentSectionTab === "overview" && (
                   <>
                     <section className="incident-metric-cards">
-                      <article>
+                      <button onClick={()=>setIncidentSectionTab("history")}>
                         <small>TOTAL INCIDENTS</small>
                         <strong>{incidents.length}</strong>
-                      </article>
-                      <article>
+                      </button>
+                      <button onClick={()=>setIncidentSectionTab("incidents")}>
                         <small>ACTIVE</small>
                         <strong>{openIncidents}</strong>
-                      </article>
-                      <article>
+                      </button>
+                      <button onClick={()=>setIncidentSectionTab("major")}>
                         <small>MAJOR INCIDENTS</small>
                         <strong>{majorIncidents.length}</strong>
-                      </article>
-                      <article>
+                      </button>
+                      <button onClick={()=>setIncidentSectionTab("incidents")}>
                         <small>RECOVERED, AWAITING CLOSE</small>
                         <strong>
                           {
@@ -2773,7 +2785,7 @@ export function PrivateApp({
                             ).length
                           }
                         </strong>
-                      </article>
+                      </button>
                     </section>
                   </>
                 )}
@@ -2781,9 +2793,12 @@ export function PrivateApp({
             )}
           </section>
         )}
-        {view === "tasks" && (<><div className="task-board-actions"><span>Double-click a lane heading to rename it.</span>{["admin","operator"].includes(user.role)&&<button className="secondary" onClick={()=>void addTaskLane()}><Plus size={14}/> Add lane</button>}</div><section className="task-board">
-            {taskLanes.map(lane=><section className={`task-column ${lane.key}`} key={lane.key} onDragOver={event=>{event.preventDefault();event.currentTarget.classList.add('drag-over');}} onDragLeave={event=>event.currentTarget.classList.remove('drag-over')} onDrop={event=>{event.currentTarget.classList.remove('drag-over');const id=event.dataTransfer.getData("text/task-id");if(id)void moveTask(id,lane.key);}}><header onDoubleClick={()=>void renameTaskLane(lane)}><span className="task-column-dot"/><h2>{lane.name}</h2><b>{tasks.filter(item=>item.status===lane.key).length}</b></header><div>{tasks.filter(item=>item.status===lane.key).map(task=><article className="task-card" key={task.id} draggable={["admin","operator"].includes(user.role)} onDragStart={event=>{event.dataTransfer.effectAllowed='move';event.dataTransfer.setData("text/task-id",task.id);}} onClick={()=>void openTask(task.id)}><div className="task-priority"><i className={task.incidentCount>=5?"critical":task.incidentCount>=3?"high":task.incidentCount>=2?"medium":"normal"}/><span>{task.incidentCount} incident{task.incidentCount===1?"":"s"}</span></div><h3>{task.title}</h3><p>{task.description||"No description added."}</p><footer><span>{task.assigneeName||"Unassigned"}</span><small>{task.updateCount} updates</small></footer></article>)}</div></section>)}
+        {view === "tasks" && (<><div className="task-board-actions"><span>Move lanes with the header arrows and edit them using the pencil.</span>{["admin","operator"].includes(user.role)&&<><button className="secondary" onClick={()=>setTagDialog(true)}>Manage tags</button><button className="secondary" onClick={()=>setLaneEditor({lane:null,name:""})}><Plus size={14}/> Add lane</button></>}</div><section className="task-board">
+            {taskLanes.map((lane,index)=><section className={`task-column ${lane.key}`} key={lane.key} onDragOver={event=>{event.preventDefault();event.currentTarget.classList.add('drag-over');}} onDragLeave={event=>event.currentTarget.classList.remove('drag-over')} onDrop={event=>{event.currentTarget.classList.remove('drag-over');const id=event.dataTransfer.getData("text/task-id");if(id)void moveTask(id,lane.key);}}><header><span className="task-column-dot"/><h2>{lane.name}</h2><b>{tasks.filter(item=>item.status===lane.key).length}</b>{["admin","operator"].includes(user.role)&&<span className="lane-tools"><button disabled={index===0} onClick={()=>void reorderTaskLane(index,-1)}>←</button><button disabled={index===taskLanes.length-1} onClick={()=>void reorderTaskLane(index,1)}>→</button><button onClick={()=>setLaneEditor({lane,name:lane.name})}><Pencil size={11}/></button></span>}</header><div>{tasks.filter(item=>item.status===lane.key).map(task=><article className="task-card" key={task.id} draggable={["admin","operator"].includes(user.role)} onDragStart={event=>{event.dataTransfer.effectAllowed='move';event.dataTransfer.setData("text/task-id",task.id);}} onClick={()=>void openTask(task.id)}><div className="task-priority"><span className={`priority-badge ${task.priority?.toLowerCase()}`}>{task.priority??"P3"}</span><span>{task.incidentCount} incident{task.incidentCount===1?"":"s"}</span><button onClick={event=>{event.stopPropagation();void openTaskClassification(task)}}><Settings size={12}/></button></div>{task.tags?.length>0&&<div className="task-tags">{task.tags.map(tag=><span key={tag.id} style={{'--tag-color':tag.color} as CSSProperties}>{tag.name}</span>)}</div>}<h3>{task.title}</h3><p>{task.description||"No description added."}</p><footer><span>{task.assigneeName||"Unassigned"}</span><small>{task.updateCount} updates</small></footer></article>)}</div></section>)}
           </section></>)}
+        {laneEditor&&<div className="modal-backdrop" onMouseDown={()=>setLaneEditor(null)}><section className="modal lane-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setLaneEditor(null)}><X/></button><p className="eyebrow">TASK BOARD</p><h2>{laneEditor.lane?"Rename lane":"Create lane"}</h2><p>Choose a short name that describes this workflow stage.</p><form onSubmit={saveTaskLane}><label>Lane name<input autoFocus required maxLength={80} value={laneEditor.name} onChange={event=>setLaneEditor({...laneEditor,name:event.target.value})}/></label><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setLaneEditor(null)}>Cancel</button><button className="primary">{laneEditor.lane?"Save lane":"Create lane"}</button></div></form></section></div>}
+        {tagDialog&&<div className="modal-backdrop" onMouseDown={()=>setTagDialog(false)}><section className="modal tag-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setTagDialog(false)}><X/></button><p className="eyebrow">TASK CLASSIFICATION</p><h2>Manage tags</h2><div className="tag-catalogue">{taskTags.map(tag=><span key={tag.id} style={{'--tag-color':tag.color} as CSSProperties}>{tag.name}</span>)}</div><form onSubmit={createTaskTag}><label>Tag name<input name="name" required maxLength={40}/></label><label>Colour<input name="color" type="color" defaultValue="#41d69b"/></label><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setTagDialog(false)}>Done</button><button className="primary">Create tag</button></div></form></section></div>}
+        {classifyingTask&&<div className="modal-backdrop" onMouseDown={()=>setClassifyingTask(null)}><section className="modal tag-modal" role="dialog" aria-modal="true" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setClassifyingTask(null)}><X/></button><p className="eyebrow">TASK CLASSIFICATION</p><h2>{classifyingTask.title}</h2><form onSubmit={saveTaskClassification}><label>Priority<select name="priority" defaultValue={classifyingTask.priority}>{(["P1","P2","P3","P4"] as Priority[]).map(item=><option key={item}>{item}</option>)}</select></label><fieldset className="tag-picker"><legend>Tags</legend>{taskTags.map(tag=><label key={tag.id}><input type="checkbox" name="tagIds" value={tag.id} defaultChecked={classifyingTask.selectedTagIds?.includes(tag.id)}/><span style={{'--tag-color':tag.color} as CSSProperties}>{tag.name}</span></label>)}</fieldset><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setClassifyingTask(null)}>Cancel</button><button className="primary">Save classification</button></div></form></section></div>}
         {view === "maintenance" && (
           <section className="maintenance-page">
             <div className="maintenance-summary">
