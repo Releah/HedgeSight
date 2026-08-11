@@ -129,7 +129,8 @@ storageRouter.get("/interfaces/:interfaceId/history", async (request, response) 
 
 storageRouter.get("/devices/:deviceId/metric-history",async(request,response)=>{
   const key=z.string().min(1).max(500).parse(request.query.key),hours=z.coerce.number().int().min(1).max(8760).catch(24).parse(request.query.hours);
-  const result=await pool.query(`SELECT collected_at AS timestamp,value FROM metric_samples WHERE device_id=$1 AND metric_key=$2 AND collected_at>now()-make_interval(hours=>$3) ORDER BY collected_at`,[request.params.deviceId,key,hours]);
+  const resolution=hours<=48?"raw":hours<=24*90?"5m":hours<=24*365?"1h":"1d";
+  const result=resolution==="raw"?await pool.query(`SELECT collected_at AS timestamp,value FROM metric_samples WHERE device_id=$1 AND metric_key=$2 AND collected_at>now()-make_interval(hours=>$3) ORDER BY collected_at`,[request.params.deviceId,key,hours]):await pool.query(`SELECT bucket_at AS timestamp,value_avg AS value,value_min AS "valueMin",value_max AS "valueMax",value_p95 AS "valueP95",samples FROM metric_rollups WHERE device_id=$1 AND metric_key=$2 AND resolution=$3 AND bucket_at>now()-make_interval(hours=>$4) ORDER BY bucket_at`,[request.params.deviceId,key,resolution,hours]);
   response.json(result.rows);
 });
 
@@ -158,7 +159,7 @@ storageRouter.get("/configuration-snapshots/:snapshotId/content", async (request
 
 storageRouter.get("/storage/status", async (_request, response) => {
   const result = await pool.query(`SELECT pg_database_size(current_database())::bigint AS "databaseBytes",
-    (SELECT count(*)::bigint FROM interface_samples) AS "interfaceSamples", (SELECT count(*)::bigint FROM interface_rollups) AS rollups,
+    (SELECT count(*)::bigint FROM interface_samples) AS "interfaceSamples", ((SELECT count(*) FROM interface_rollups)+(SELECT count(*) FROM metric_rollups)+(SELECT count(*) FROM probe_result_rollups))::bigint AS rollups,
     (SELECT count(*)::bigint FROM interfaces) AS interfaces, (SELECT count(*)::bigint FROM configuration_snapshots) AS "configurationSnapshots"`);
   const maintenance = await pool.query(`SELECT started_at AS "startedAt",finished_at AS "finishedAt",status,rollups_written AS "rollupsWritten",rows_deleted AS "rowsDeleted",message FROM storage_maintenance_runs ORDER BY started_at DESC LIMIT 1`);
   response.json({ ...result.rows[0], lastMaintenance: maintenance.rows[0] ?? null });
