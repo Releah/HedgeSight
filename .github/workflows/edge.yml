@@ -10,6 +10,10 @@ permissions:
   packages: write
   id-token: write
 
+concurrency:
+  group: edge-containers-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   publish:
     strategy:
@@ -37,5 +41,7 @@ jobs:
           push: true
           tags: ghcr.io/releah/${{ matrix.image }}:edge
           build-args: HEDGESIGHT_VERSION=edge-${{ github.sha }}
-          provenance: mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: mode=min
           sbom: true

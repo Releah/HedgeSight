@@ -1,19 +1,18 @@
 # syntax=docker/dockerfile:1.7
-FROM node:24-alpine AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
 RUN corepack enable
 WORKDIR /workspace
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* tsconfig.base.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY services/api/package.json services/api/package.json
-COPY services/worker/package.json services/worker/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-RUN pnpm install --frozen-lockfile=false
-COPY apps apps
-COPY services services
-COPY packages packages
+RUN --mount=type=cache,id=hedgesight-pnpm,target=/pnpm/store,sharing=locked pnpm config set store-dir /pnpm/store && pnpm install --frozen-lockfile=false
+COPY apps/web apps/web
+COPY services/api services/api
+COPY packages/contracts packages/contracts
 COPY migrations migrations
 RUN pnpm --filter @hedgesight/contracts build && pnpm --filter @hedgesight/web build && pnpm --filter @hedgesight/api build
-RUN pnpm --filter @hedgesight/api deploy --prod --legacy /output/api
+RUN --mount=type=cache,id=hedgesight-pnpm,target=/pnpm/store,sharing=locked pnpm config set store-dir /pnpm/store && pnpm --filter @hedgesight/api deploy --prod --legacy /output/api
 
 FROM node:24-alpine AS app
 ARG HEDGESIGHT_VERSION=0.1.0-dev

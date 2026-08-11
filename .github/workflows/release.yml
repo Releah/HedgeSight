@@ -7,6 +7,9 @@ permissions:
   contents: read
   packages: write
   id-token: write
+concurrency:
+  group: release-containers-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   publish:
     strategy:
@@ -43,5 +46,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: HEDGESIGHT_VERSION=${{ github.ref_name }}
-          provenance: mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: mode=min
           sbom: true
