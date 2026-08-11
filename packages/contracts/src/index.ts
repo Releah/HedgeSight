@@ -1,6 +1,7 @@
 export const checkKinds = ["ping", "http", "snmp", "ssh", "vsphere"] as const;
 export type CheckKind = (typeof checkKinds)[number];
 export type Status = "up" | "down" | "degraded" | "unknown";
+export type DeviceStatus = Status | "monitoring_error";
 
 export interface ProbeJob {
   id: string;
@@ -64,7 +65,7 @@ export interface RetentionPolicy {
 }
 
 export interface DashboardSummary {
-  counts: Record<Status, number>;
+  counts: Record<DeviceStatus, number>;
   maintenanceCount: number;
   devices: Array<{
     id: string;

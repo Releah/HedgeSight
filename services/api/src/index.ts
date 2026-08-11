@@ -139,11 +139,11 @@ app.get("/api/public/status", async (_request, response) => {
       FROM incidents i WHERE i.status<>'resolved' AND i.archived_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id WHERE m.device_id=i.device_id AND m.ended_at IS NULL AND r.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now())
       ORDER BY i.opened_at DESC LIMIT 20`)]);
-  const summary = { up: 0, down: 0, degraded: 0, unknown: 0, maintenance: 0 };
+  const summary = { up: 0, down: 0, degraded: 0, monitoring_error:0, unknown: 0, maintenance: 0 };
   for (const row of counts.rows) summary[row.status as keyof typeof summary] = row.count;
   const total = Object.values(summary).reduce((sum, count) => sum + count, 0);
   const alertingTotal=total-summary.maintenance;
-  const overallStatus = summary.down ? "outage" : summary.degraded ? "degraded" : (!alertingTotal || summary.up === alertingTotal) ? "operational" : "unknown";
+  const overallStatus = summary.down ? "outage" : (summary.degraded||summary.monitoring_error) ? "degraded" : (!alertingTotal || summary.up === alertingTotal) ? "operational" : "unknown";
   response.set("Cache-Control", "public, max-age=15").json({ overallStatus, counts: { ...summary, total }, activeIncidents: incidents.rows[0].count, incidents:publicIncidents.rows, changes:changes.rows, lastUpdated: new Date().toISOString() });
 });
 
@@ -272,7 +272,7 @@ app.get("/api/dashboard", async (_request, response) => {
       FROM change_records r JOIN users u ON u.id=r.change_manager_user_id JOIN change_record_devices m ON m.change_record_id=r.id AND m.ended_at IS NULL
       JOIN devices d ON d.id=m.device_id WHERE r.ended_at IS NULL GROUP BY r.id,u.id ORDER BY r.started_at DESC`),
   ]);
-  const summary = { up: 0, down: 0, degraded: 0, unknown: 0 };
+  const summary = { up: 0, down: 0, degraded: 0, monitoring_error:0, unknown: 0 };
   let maintenanceCount=0;
   for (const row of counts.rows) { if(row.status==="maintenance") maintenanceCount=row.count; else summary[row.status as keyof typeof summary] = row.count; }
   response.json({ counts: summary, maintenanceCount, devices: devices.rows, workers: workers.rows, recentIncidents: incidents.rows, activeChanges:changes.rows });
@@ -293,11 +293,11 @@ app.get("/api/incidents",async(_request,response)=>{
 app.get("/api/incidents/:incidentId",async(request,response)=>{
   const result=await pool.query(`SELECT i.id,i.status,i.priority,i.opened_at AS "openedAt",i.recovered_at AS "recoveredAt",i.resolved_at AS "resolvedAt",i.archived_at AS "archivedAt",
     d.id AS "deviceId",d.name AS "deviceName",d.address,d.description AS "deviceDescription",d.status AS "deviceStatus",
-    c.name AS "checkName",c.kind AS "checkKind",c.last_status AS "checkStatus",opening.message AS "openingMessage",i.public_message AS "publicMessage",i.public_message_updated_at AS "publicMessageUpdatedAt",
+    c.name AS "checkName",c.kind AS "checkKind",c.last_status AS "checkStatus",primary_check.last_status AS "availabilityStatus",opening.message AS "openingMessage",i.public_message AS "publicMessage",i.public_message_updated_at AS "publicMessageUpdatedAt",
     investigator.id AS "investigatorId",investigator.display_name AS "investigatorName",closer.display_name AS "closedByName"
     FROM incidents i JOIN checks c ON c.id=i.check_id JOIN devices d ON d.id=c.device_id
     LEFT JOIN probe_results opening ON opening.id=i.opening_result_id LEFT JOIN users investigator ON investigator.id=i.investigating_user_id
-    LEFT JOIN users closer ON closer.id=i.closed_by_user_id WHERE i.id=$1`,[request.params.incidentId]);
+    LEFT JOIN users closer ON closer.id=i.closed_by_user_id LEFT JOIN LATERAL (SELECT last_status FROM checks WHERE device_id=i.device_id AND kind='ping' ORDER BY created_at LIMIT 1) primary_check ON true WHERE i.id=$1`,[request.params.incidentId]);
   if(!result.rowCount)return response.status(404).json({error:"Incident not found"});
   const updates=await pool.query(`SELECT x.id,x.body,x.created_at AS "createdAt",COALESCE(u.display_name,'System') AS "authorName",u.id AS "authorId"
     FROM incident_updates x LEFT JOIN users u ON u.id=x.user_id WHERE x.incident_id=$1 ORDER BY x.created_at`,[request.params.incidentId]);
@@ -309,9 +309,9 @@ app.put("/api/incidents/:incidentId/priority",async(request,response)=>{if(!requ
 app.post("/api/incidents/:incidentId/claim",async(request,response)=>{
   const user=response.locals.user;
   const result=await pool.query(`UPDATE incidents i SET status='under_investigation',investigating_user_id=$2
-    FROM checks c WHERE i.id=$1 AND c.id=i.check_id AND i.status IN ('open','pending_investigation','under_investigation') AND c.last_status IN ('down','degraded')
+    WHERE i.id=$1 AND i.status IN ('open','pending_investigation','under_investigation')
       AND (i.investigating_user_id IS NULL OR i.investigating_user_id=$2) RETURNING i.id`,[request.params.incidentId,user.id]);
-  if(!result.rowCount)return response.status(409).json({error:"This incident is already resolved, operational, or assigned to another investigator"});
+  if(!result.rowCount)return response.status(409).json({error:"This incident is resolved or assigned to another investigator"});
   return response.json({claimed:true,investigatorName:user.displayName});
 });
 
@@ -336,12 +336,17 @@ app.put("/api/incidents/:incidentId/public-message",async(request,response)=>{
 
 app.post("/api/incidents/:incidentId/resolve",async(request,response)=>{
   const result=await pool.query(`UPDATE incidents i SET status='resolved',recovered_at=COALESCE(i.recovered_at,now()),resolved_at=now(),closed_by_user_id=$2
-    FROM checks c WHERE i.id=$1 AND c.id=i.check_id AND i.status<>'resolved' AND c.last_status IN ('up','degraded')
+    WHERE i.id=$1 AND i.status<>'resolved' AND EXISTS(SELECT 1 FROM checks primary_check WHERE primary_check.device_id=i.device_id AND primary_check.kind='ping' AND primary_check.last_status='up')
       AND EXISTS(SELECT 1 FROM incident_updates x WHERE x.incident_id=i.id) RETURNING id`,[request.params.incidentId,response.locals.user.id]);
-  if(!result.rowCount)return response.status(409).json({error:"The check must be responding and the incident must have at least one update before it can be resolved"});
+  if(!result.rowCount)return response.status(409).json({error:"Primary availability must be responding and the incident must have at least one update before it can be resolved"});
   return response.json({resolved:true});
 });
 app.post("/api/incidents/:incidentId/archive",async(request,response)=>{const result=await pool.query(`UPDATE incidents SET archived_at=now(),archived_by_user_id=$2 WHERE id=$1 AND status='resolved' AND archived_at IS NULL RETURNING id`,[request.params.incidentId,response.locals.user.id]);if(!result.rowCount)return response.status(409).json({error:"Only a resolved, unarchived incident can be archived"});return response.json({archived:true});});
+
+app.get("/api/monitoring-alerts",async(_request,response)=>{const result=await pool.query(`SELECT a.id,a.kind,a.state,a.message,a.occurrence_count AS "occurrenceCount",a.first_seen_at AS "firstSeenAt",a.last_seen_at AS "lastSeenAt",d.id AS "deviceId",d.name AS "deviceName",d.address,c.id AS "checkId",c.name AS "checkName",c.kind AS "checkKind" FROM monitoring_alerts a JOIN devices d ON d.id=a.device_id JOIN checks c ON c.id=a.check_id WHERE a.state='open' ORDER BY CASE a.kind WHEN 'monitoring_unavailable' THEN 1 ELSE 2 END,a.last_seen_at DESC`);response.json(result.rows);});
+app.post("/api/monitoring-alerts/:alertId/dismiss",async(request,response)=>{if(!requireOperator(response))return;const result=await pool.query(`UPDATE monitoring_alerts SET state='dismissed' WHERE id=$1 AND state='open' RETURNING id`,[request.params.alertId]);response.json({dismissed:Boolean(result.rowCount)});});
+app.post("/api/monitoring-alerts/:alertId/incident",async(request,response)=>{if(!requireOperator(response))return;const client=await pool.connect();try{await client.query('BEGIN');const alert=await client.query(`SELECT * FROM monitoring_alerts WHERE id=$1 AND state='open' FOR UPDATE`,[request.params.alertId]);if(!alert.rowCount){await client.query('ROLLBACK');return response.status(409).json({error:'Alert is no longer active'});}let incident=await client.query(`SELECT id FROM incidents WHERE device_id=$1 AND status<>'resolved' LIMIT 1`,[alert.rows[0].device_id]);if(!incident.rowCount)incident=await client.query(`INSERT INTO incidents(device_id,check_id,recovered_at,status,last_activity_at) VALUES($1,$2,now(),'pending_investigation',now()) RETURNING id`,[alert.rows[0].device_id,alert.rows[0].check_id]);await client.query(`INSERT INTO incident_updates(incident_id,user_id,body) VALUES($1,$2,$3)`,[incident.rows[0].id,response.locals.user.id,`Incident manually raised from monitoring alert: ${alert.rows[0].message}`]);await client.query(`UPDATE monitoring_alerts SET state='incident',linked_incident_id=$2 WHERE id=$1`,[request.params.alertId,incident.rows[0].id]);await client.query('COMMIT');response.status(201).json({incidentId:incident.rows[0].id});}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}});
+app.post("/api/monitoring-alerts/:alertId/task",async(request,response)=>{if(!requireOperator(response))return;const client=await pool.connect();try{await client.query('BEGIN');const alert=await client.query(`SELECT a.*,d.name AS device_name,c.name AS check_name FROM monitoring_alerts a JOIN devices d ON d.id=a.device_id JOIN checks c ON c.id=a.check_id WHERE a.id=$1 AND a.state='open' FOR UPDATE OF a`,[request.params.alertId]);if(!alert.rowCount){await client.query('ROLLBACK');return response.status(409).json({error:'Alert is no longer active'});}const item=alert.rows[0],task=await client.query(`INSERT INTO tasks(title,description,priority,created_by_user_id) VALUES($1,$2,'P2',$3) RETURNING id`,[`${item.device_name}: ${item.check_name}`,`Follow up monitoring alert: ${item.message}`,response.locals.user.id]);await client.query(`UPDATE monitoring_alerts SET state='task',linked_task_id=$2 WHERE id=$1`,[request.params.alertId,task.rows[0].id]);await client.query('COMMIT');response.status(201).json({taskId:task.rows[0].id});}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}});
 
 app.get("/api/major-incidents",async(_request,response)=>{
   const result=await pool.query(`SELECT m.id,m.number,'MI-'||to_char(m.opened_at,'YYYY')||'-'||lpad(m.number::text,4,'0') AS reference,
@@ -666,7 +671,12 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
     if(row.kind==="ssh"&&["up","degraded"].includes(value.status)&&value.observations.hostKeyFingerprint)await client.query(`UPDATE device_ssh_credentials SET host_key_fingerprint=COALESCE(host_key_fingerprint,$2) WHERE device_id=$1`,[row.device_id,String(value.observations.hostKeyFingerprint)]);
     const maintenance=await client.query(`SELECT 1 FROM change_record_devices m JOIN change_records r ON r.id=m.change_record_id
       WHERE m.device_id=$1 AND m.ended_at IS NULL AND r.started_at<=now() AND r.estimated_end_at>now()`,[row.device_id]);
-    if (["down","degraded"].includes(value.status) && !maintenance.rowCount) {
+    if(row.kind!=="ping"){
+      const alertKind=value.status==="degraded"?"degraded":!["up"].includes(value.status)?"monitoring_unavailable":null;
+      if(alertKind)await client.query(`INSERT INTO monitoring_alerts(device_id,check_id,kind,message) VALUES($1,$2,$3,$4) ON CONFLICT(check_id,kind) WHERE state='open' DO UPDATE SET message=EXCLUDED.message,last_seen_at=now(),occurrence_count=monitoring_alerts.occurrence_count+1`,[row.device_id,row.check_id,alertKind,value.message??`${row.kind} returned ${value.status}`]);
+      if(value.status==="up")await client.query(`UPDATE monitoring_alerts SET state='cleared',cleared_at=now(),last_seen_at=now() WHERE check_id=$1 AND state='open'`,[row.check_id]);
+    }
+    if (row.kind==="ping" && value.status==="down" && !maintenance.rowCount) {
       const alreadyActive=await client.query("SELECT 1 FROM incident_signals WHERE check_id=$1 AND recovered_at IS NULL",[row.check_id]);
       if(!alreadyActive.rowCount){
         let incident=await client.query(`SELECT id FROM incidents WHERE device_id=$1 AND status<>'resolved' FOR UPDATE`,[row.device_id]);
@@ -687,15 +697,17 @@ app.post("/api/workers/jobs/:jobId/results", async (request, response) => {
           if(noted.rowCount)await client.query(`INSERT INTO incident_updates(incident_id,user_id,body) VALUES($1,NULL,$2)`,[incident.rows[0].id,`Maintenance window ${expired.rows[0].change_reference} ended at ${new Date(expired.rows[0].estimated_end_at).toISOString()}, but monitoring still reports the node down. Assigned change manager: ${expired.rows[0].manager_name}.`]);
         }
       }
-    } else if (value.status === "up") {
+    } else if (row.kind==="ping" && value.status === "up") {
       const signal=await client.query(`UPDATE incident_signals SET recovered_at=now(),closing_result_id=$2 WHERE check_id=$1 AND recovered_at IS NULL RETURNING incident_id`,[row.check_id,inserted.rows[0].id]);
       if(signal.rowCount)await client.query(`UPDATE incidents i SET status='pending_investigation',recovered_at=COALESCE(recovered_at,now()),closing_result_id=COALESCE(closing_result_id,$2),last_activity_at=now()
         WHERE i.id=$1 AND NOT EXISTS(SELECT 1 FROM incident_signals s WHERE s.incident_id=i.id AND s.recovered_at IS NULL)`,[signal.rows[0].incident_id,inserted.rows[0].id]);
     }
     await client.query(`UPDATE devices d SET
-      status = CASE WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND last_status='down') THEN 'down'
-                    WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND last_status='degraded') THEN 'degraded'
-                    WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND last_status='up') THEN 'up' ELSE 'unknown' END,
+      status = CASE WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND kind='ping' AND last_status='down') THEN 'down'
+                    WHEN NOT EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND kind='ping' AND last_status='up') THEN 'unknown'
+                    WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND kind<>'ping' AND last_status='degraded') THEN 'degraded'
+                    WHEN EXISTS(SELECT 1 FROM checks WHERE device_id=d.id AND kind<>'ping' AND last_status IN ('down','unknown') AND last_run_at IS NOT NULL) THEN 'monitoring_error'
+                    ELSE 'up' END,
       last_seen_at = CASE WHEN $2='up' THEN $3 ELSE last_seen_at END, updated_at=now() WHERE id=$1`,
       [row.device_id, value.status, value.finishedAt]);
     await client.query("COMMIT");

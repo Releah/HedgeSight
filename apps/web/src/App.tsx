@@ -210,6 +210,7 @@ type IncidentRecord = {
 type IncidentDetail = IncidentRecord & {
   deviceDescription: string;
   checkStatus: string;
+  availabilityStatus: string;
   openingMessage: string | null;
   investigatorId: string | null;
   closedByName: string | null;
@@ -223,6 +224,7 @@ type IncidentDetail = IncidentRecord & {
     authorId: string | null;
   }>;
 };
+type MonitoringAlert={id:string;kind:"degraded"|"monitoring_unavailable";message:string;occurrenceCount:number;firstSeenAt:string;lastSeenAt:string;deviceId:string;deviceName:string;address:string;checkId:string;checkName:string;checkKind:string};
 type MajorIncident = {
   id: string;
   number: string;
@@ -253,7 +255,7 @@ type MajorIncidentDetail = MajorIncident & {
   }>;
 };
 const empty: DashboardSummary = {
-  counts: { up: 0, down: 0, degraded: 0, unknown: 0 },
+  counts: { up: 0, down: 0, degraded: 0, monitoring_error:0, unknown: 0 },
   maintenanceCount: 0,
   devices: [],
   workers: [],
@@ -330,7 +332,7 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`badge ${status}`}>
       <i />
-      {status}
+      {status==="monitoring_error"?"Monitoring unavailable":status}
     </span>
   );
 }
@@ -1198,6 +1200,7 @@ export function PrivateApp({
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [authenticationMessage, setAuthenticationMessage] = useState("");
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
+  const [monitoringAlerts,setMonitoringAlerts]=useState<MonitoringAlert[]>([]);
   const [selectedIncident, setSelectedIncident] =
     useState<IncidentDetail | null>(null);
   const [incidentError, setIncidentError] = useState("");
@@ -1247,7 +1250,7 @@ export function PrivateApp({
         managersResponse,
         changesResponse,
         tasksResponse,
-        assigneesResponse,lanesResponse,tagsResponse,
+        assigneesResponse,lanesResponse,tagsResponse,alertsResponse,
       ] = await Promise.all([
         fetch("/api/dashboard"),
         fetch("/api/monitoring"),
@@ -1256,7 +1259,7 @@ export function PrivateApp({
         fetch("/api/major-incidents"),
         fetch("/api/change-managers"),
         fetch("/api/changes"),
-        fetch("/api/tasks"),fetch("/api/task-assignees"),fetch("/api/task-lanes"),fetch("/api/task-tags"),
+        fetch("/api/tasks"),fetch("/api/task-assignees"),fetch("/api/task-lanes"),fetch("/api/task-tags"),fetch("/api/monitoring-alerts"),
       ]);
       if (
         !dashboardResponse.ok ||
@@ -1264,7 +1267,7 @@ export function PrivateApp({
         !groupsResponse.ok ||
         !incidentsResponse.ok ||
         !majorResponse.ok
-        || !managersResponse.ok || !changesResponse.ok || !tasksResponse.ok || !assigneesResponse.ok || !lanesResponse.ok || !tagsResponse.ok
+        || !managersResponse.ok || !changesResponse.ok || !tasksResponse.ok || !assigneesResponse.ok || !lanesResponse.ok || !tagsResponse.ok || !alertsResponse.ok
       )
         throw new Error("Dashboard is unavailable");
       setSummary(await dashboardResponse.json());
@@ -1274,7 +1277,7 @@ export function PrivateApp({
       setMajorIncidents(await majorResponse.json());
       setChangeManagers(await managersResponse.json());
       setChanges(await changesResponse.json());
-      setTasks(await tasksResponse.json());setTaskAssignees(await assigneesResponse.json());setTaskLanes(await lanesResponse.json());setTaskTags(await tagsResponse.json());
+      setTasks(await tasksResponse.json());setTaskAssignees(await assigneesResponse.json());setTaskLanes(await lanesResponse.json());setTaskTags(await tagsResponse.json());setMonitoringAlerts(await alertsResponse.json());
       setError("");
     } catch (cause) {
       setError(
@@ -1413,6 +1416,7 @@ export function PrivateApp({
   async function openTaskClassification(task:TaskRecord){const response=await fetch(`/api/tasks/${task.id}/classification`);if(response.ok){const value=await response.json();setClassifyingTask({...task,priority:value.priority,tags:value.tags,selectedTagIds:value.tags.map((tag:TaskTag)=>tag.id)});}}
   async function saveTaskClassification(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!classifyingTask)return;const data=new FormData(event.currentTarget),priority=data.get('priority') as Priority,tagIds=data.getAll('tagIds');const response=await fetch(`/api/tasks/${classifyingTask.id}/classification`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({priority,tagIds})});if(response.ok){setClassifyingTask(null);await refresh();}}
   async function setIncidentPriority(id:string,priority:Priority){const response=await fetch(`/api/incidents/${id}/priority`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({priority})});if(response.ok){if(selectedIncident?.id===id)setSelectedIncident({...selectedIncident,priority});await refresh();}}
+  async function actOnMonitoringAlert(alert:MonitoringAlert,action:"dismiss"|"incident"|"task"){const response=await fetch(`/api/monitoring-alerts/${alert.id}/${action}`,{method:'POST'});if(!response.ok)return;const result=await response.json();await refresh();if(result.incidentId){setIncidentSectionTab('incidents');await openIncident(result.incidentId);}if(result.taskId){navigate('tasks');await openTask(result.taskId);}}
   async function archiveMajorIncident(id:string){const response=await fetch(`/api/major-incidents/${id}/archive`,{method:'POST'});if(response.ok){setSelectedMajor(null);await refresh();}}
   async function saveTask(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const data=new FormData(event.currentTarget);const response=await fetch(`/api/tasks/${selectedTask.id}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({title:data.get("title"),description:data.get("description"),status:data.get("status"),assigneeId:data.get("assigneeId")||null})});if(response.ok){await refresh();await openTask(selectedTask.id);}}
   async function addTaskUpdate(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!selectedTask)return;const form=event.currentTarget,body=new FormData(form).get("body");if((await fetch(`/api/tasks/${selectedTask.id}/updates`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({body})})).ok){form.reset();await openTask(selectedTask.id);await refresh();}}
@@ -2528,8 +2532,7 @@ export function PrivateApp({
                       <small>Public. Do not include addresses, credentials, or internal investigation details.</small>
                       <button className="secondary"><Bell size={14}/>{selectedIncident.publicMessage?"Update public message":"Publish to status page"}</button>
                     </form>
-                    {selectedIncident.status !== "resolved" &&
-                      ["down","degraded"].includes(selectedIncident.checkStatus) && (
+                    {selectedIncident.status !== "resolved" && (
                         <button
                           className="secondary"
                           onClick={() => void claimIncident()}
@@ -2546,7 +2549,7 @@ export function PrivateApp({
                       onClick={() => void resolveIncident()}
                       disabled={
                         selectedIncident.status === "resolved" ||
-                        !["up","degraded"].includes(selectedIncident.checkStatus) ||
+                        selectedIncident.availabilityStatus!=="up" ||
                         selectedIncident.updates.length === 0
                       }
                     >
@@ -2555,7 +2558,7 @@ export function PrivateApp({
                         ? "Incident resolved"
                         : "Resolve incident"}
                     </button>
-                    {selectedIncident.status!=="resolved"&&<button className="secondary" onClick={()=>setIncidentTaskDialog(true)} disabled={!['up','degraded'].includes(selectedIncident.checkStatus)||selectedIncident.updates.length===0}><ClipboardList size={15}/>Resolve & create task</button>}
+                    {selectedIncident.status!=="resolved"&&<button className="secondary" onClick={()=>setIncidentTaskDialog(true)} disabled={selectedIncident.availabilityStatus!=="up"||selectedIncident.updates.length===0}><ClipboardList size={15}/>Resolve & create task</button>}
                     {selectedIncident.status === "resolved" &&
                       !selectedIncident.archivedAt && (
                         <button
@@ -2571,10 +2574,10 @@ export function PrivateApp({
                         Archived {new Date(selectedIncident.archivedAt).toLocaleString()}.
                       </small>
                     )}
-                    {!selectedIncident.recoveredAt && (
-                      <small>Waiting for the device to respond.</small>
+                    {selectedIncident.availabilityStatus!=="up" && (
+                      <small>Waiting for primary availability monitoring to respond.</small>
                     )}
-                    {selectedIncident.recoveredAt &&
+                    {selectedIncident.availabilityStatus==="up" &&
                       selectedIncident.updates.length === 0 && (
                         <small>Add an update before resolving.</small>
                       )}
@@ -2763,6 +2766,7 @@ export function PrivateApp({
                 )}
                 {incidentSectionTab === "overview" && (
                   <>
+                    <Panel title="Monitoring alerts" subtitle="Advanced monitoring problems do not automatically declare an outage" className="full-panel"><div className="monitoring-alert-list">{monitoringAlerts.map(alert=><article key={alert.id}><span className={`alert-kind ${alert.kind}`}><Activity size={15}/></span><div><strong>{alert.deviceName} · {alert.checkName}</strong><p>{alert.message}</p><small>{alert.checkKind.toUpperCase()} · seen {alert.occurrenceCount} times · latest {relativeTime(alert.lastSeenAt)}</small></div><div className="alert-actions"><button className="secondary" onClick={()=>void actOnMonitoringAlert(alert,'task')}><ClipboardList size={13}/> Create task</button><button className="secondary" onClick={()=>void actOnMonitoringAlert(alert,'incident')}><Bell size={13}/> Raise incident</button><button className="icon-button" title="Dismiss" onClick={()=>void actOnMonitoringAlert(alert,'dismiss')}><X size={13}/></button></div></article>)}{!monitoringAlerts.length&&<div className="chat-empty"><ShieldCheck size={16}/> No active advanced-monitoring alerts.</div>}</div></Panel>
                     <section className="incident-metric-cards">
                       <button onClick={()=>setIncidentSectionTab("history")}>
                         <small>TOTAL INCIDENTS</small>
