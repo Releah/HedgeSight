@@ -17,6 +17,7 @@ import {
   ChevronDown,
   CircleGauge,
   ClipboardList,
+  Copy,
   Database,
   Eye,
   History,
@@ -1014,11 +1015,8 @@ function Login({
   status: AuthStatus;
   onAuthenticated: () => void;
 }) {
-  const [error, setError] = useState(
-    new URLSearchParams(location.search).has("error")
-      ? "Single sign-on could not be completed."
-      : "",
-  );
+  const loginError=new URLSearchParams(location.search).get("error");
+  const [error, setError] = useState(loginError?({denied:"Sign-in was cancelled or denied by the identity provider.",state:"The sign-in request expired or could not be verified. Please try again.",email:"The identity provider did not supply an email address. Enable the email scope mapping.",claims:"The identity provider returned an incomplete identity token.",link:"This email is already linked to a different OIDC identity.",disabled:"This HedgeSight account is disabled.",provider:"HedgeSight could not validate the provider response. Ask an administrator to check the OIDC test and system logs.",oidc:"Single sign-on is not completely configured."} as Record<string,string>)[loginError]??"Single sign-on could not be completed.":"");
   const [databaseSetup,setDatabaseSetup]=useState(false);
   const [databaseBusy,setDatabaseBusy]=useState(false);
   async function configureDatabase(event:FormEvent<HTMLFormElement>){event.preventDefault();const data=new FormData(event.currentTarget);setDatabaseBusy(true);const response=await fetch("/api/auth/database",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({connectionString:data.get("connectionString")})});if(response.ok){setError("");setTimeout(()=>location.reload(),2500);}else{setError((await response.json()).error??"Unable to connect to PostgreSQL");setDatabaseBusy(false);}}
@@ -1228,6 +1226,7 @@ export function PrivateApp({
   const [accountError, setAccountError] = useState("");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [authenticationMessage, setAuthenticationMessage] = useState("");
+  const [oidcTest,setOidcTest]=useState<{ok:boolean;issuer?:string;authorizationEndpoint?:string;tokenEndpoint?:string;userInfoEndpoint?:string|null;jwksUri?:string;pkceSupported?:boolean;error?:string}|null>(null);
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [monitoringAlerts,setMonitoringAlerts]=useState<MonitoringAlert[]>([]);
   const [selectedIncident, setSelectedIncident] =
@@ -1719,11 +1718,14 @@ export function PrivateApp({
       setAuthenticationSettings(
         await fetch("/api/settings/authentication").then((r) => r.json()),
       );
-      setAuthenticationMessage("OIDC settings saved");
+      setAuthenticationMessage(body.tested?"OIDC settings saved and provider discovery passed":"OIDC settings saved");
+      setOidcTest(null);
       window.setTimeout(() => setAuthenticationMessage(""), 2500);
     } else
       setAuthenticationMessage(body.error ?? "Unable to save OIDC settings");
   }
+  async function testOidc(){setOidcTest(null);const response=await fetch("/api/settings/authentication/oidc/test",{method:"POST"}),body=await response.json();setOidcTest(response.ok?body:{ok:false,error:body.error??"Provider test failed"});}
+  async function copyOidcValue(value:string){try{await navigator.clipboard.writeText(value);setAuthenticationMessage("Copied to clipboard");window.setTimeout(()=>setAuthenticationMessage(""),1500);}catch{setAuthenticationMessage("Copy was blocked by the browser; select the value manually.");}}
   async function saveRetention(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const response = await fetch("/api/retention", {
@@ -3194,10 +3196,20 @@ export function PrivateApp({
                     </article>
                   </div>
                   <Panel
-                    title="OAuth2 / OpenID Connect"
-                    subtitle="Use your provider’s OpenID Connect discovery URL and register the callback exactly"
+                    title="OpenID Connect configuration"
+                    subtitle="Connect HedgeSight to Authentik or another standards-compliant OpenID Connect provider"
                     className="full-panel"
                   >
+                    <section className="authentik-guide">
+                      <div className="authentik-guide-head"><div><strong>Authentik quick setup</strong><small>Create an OAuth2/OpenID Provider for HedgeSight</small></div><span className="provider-pill">Recommended</span></div>
+                      <ol>
+                        <li>In Authentik, open <strong>Applications → Applications</strong> and create an application with a new <strong>OAuth2/OpenID Provider</strong>.</li>
+                        <li>Use a <strong>Confidential</strong> client, select a signing key, and allow the <strong>openid</strong>, <strong>profile</strong>, and <strong>email</strong> scopes.</li>
+                        <li>Add this as a <strong>strict redirect URI</strong>: <span className="oidc-copy-value"><code>{`${location.origin}/api/auth/oidc/callback`}</code><button type="button" onClick={()=>copyOidcValue(`${location.origin}/api/auth/oidc/callback`)} title="Copy callback URL"><Copy size={14}/></button></span></li>
+                        <li>Keep Authentik's recommended <strong>per-provider issuer</strong> mode. Copy the provider's OpenID issuer into HedgeSight below.</li>
+                      </ol>
+                      <p className="authentik-example">Typical issuer: <code>https://auth.example.net/application/o/hedgesight/</code> — include the final slash; do not paste the authorization endpoint.</p>
+                    </section>
                     <form className="oidc-form" onSubmit={saveOidc}>
                       <label className="toggle-label">
                         <input
@@ -3206,6 +3218,7 @@ export function PrivateApp({
                           defaultChecked={authenticationSettings?.localAccountsEnabled ?? true}
                         />{" "}
                         Allow local username and password sign-in
+                        <small>Keep this enabled until an administrator completes one successful OIDC sign-in. HedgeSight enforces this lockout protection.</small>
                       </label>
                       <label className="toggle-label">
                         <input
@@ -3214,6 +3227,7 @@ export function PrivateApp({
                           defaultChecked={authenticationSettings?.oidc.enabled}
                         />{" "}
                         Enable OAuth2 / OIDC sign-in
+                        <small>Adds the identity-provider button to the sign-in screen.</small>
                       </label>
                       <label>
                         Issuer URL
@@ -3223,8 +3237,9 @@ export function PrivateApp({
                           defaultValue={
                             authenticationSettings?.oidc.issuerUrl ?? ""
                           }
-                          placeholder="https://login.example.com/realms/hedgesight"
+                          placeholder="https://auth.example.net/application/o/hedgesight/"
                         />
+                        <small>The exact issuer from provider metadata. HedgeSight discovers <code>.well-known/openid-configuration</code> from it.</small>
                       </label>
                       <label>
                         Client ID
@@ -3235,6 +3250,7 @@ export function PrivateApp({
                           }
                           placeholder="hedgesight"
                         />
+                        <small>Authentik: Provider → Client ID.</small>
                       </label>
                       <label>
                         Client secret
@@ -3247,6 +3263,7 @@ export function PrivateApp({
                               : "Enter client secret"
                           }
                         />
+                        <small>Authentik: Provider → Client Secret. It stays encrypted and is never returned to this page.</small>
                       </label>
                       <label>
                         Callback URL
@@ -3258,7 +3275,9 @@ export function PrivateApp({
                             `${location.origin}/api/auth/oidc/callback`
                           }
                         />
+                        <small>Must exactly match the strict redirect URI registered in the provider, including scheme and hostname.</small>
                       </label>
+                      <div className="oidc-standard-note"><strong>Account matching</strong><span>HedgeSight requests <code>openid profile email</code>. First login links an existing local account with the same email, or creates a viewer account.</span></div>
                       <div className="oidc-actions">
                         <span
                           className={
@@ -3269,11 +3288,16 @@ export function PrivateApp({
                         >
                           {authenticationMessage}
                         </span>
+                        <button type="button" className="secondary" onClick={testOidc}>Test saved provider</button>
                         <button className="primary">
-                          <ShieldCheck size={15} /> Save OIDC settings
+                          <ShieldCheck size={15} /> Save and validate
                         </button>
                       </div>
+                      {oidcTest&&<div className={`oidc-test-result ${oidcTest.ok?"success":"failure"}`}><strong>{oidcTest.ok?"Provider discovery passed":"Provider test failed"}</strong>{oidcTest.ok?<dl><div><dt>Issuer</dt><dd>{oidcTest.issuer}</dd></div><div><dt>Authorization endpoint</dt><dd>{oidcTest.authorizationEndpoint}</dd></div><div><dt>Token endpoint</dt><dd>{oidcTest.tokenEndpoint}</dd></div><div><dt>PKCE S256 advertised</dt><dd>{oidcTest.pkceSupported?"Yes":"No (HedgeSight still sends PKCE)"}</dd></div></dl>:<p>{oidcTest.error}</p>}</div>}
                     </form>
+                  </Panel>
+                  <Panel title="What goes where" subtitle="A direct map between the Authentik provider and HedgeSight" className="full-panel">
+                    <div className="oidc-checklist"><div><strong>Authentik Client ID</strong><span>→ HedgeSight Client ID</span></div><div><strong>Authentik Client Secret</strong><span>→ HedgeSight Client secret</span></div><div><strong>Authentik OpenID issuer</strong><span>→ HedgeSight Issuer URL</span></div><div><strong>HedgeSight Callback URL</strong><span>→ Authentik strict redirect URI</span></div></div>
                   </Panel>
                   <div className="info-strip">
                     <ShieldCheck />

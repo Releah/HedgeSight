@@ -45,10 +45,17 @@ async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
   return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
 }
 let oidcConfiguration: { key:string; value:Promise<oidc.Configuration> } | null = null;
+async function discoverOidc(settings:Pick<OidcRuntimeSettings,"issuerUrl"|"clientId"|"clientSecret">){
+  if(!settings.issuerUrl||!settings.clientId)throw new Error("Issuer URL and client ID are required");
+  const configuration=await oidc.discovery(new URL(settings.issuerUrl),settings.clientId,settings.clientSecret??undefined);
+  const metadata=configuration.serverMetadata();
+  if(!metadata.authorization_endpoint||!metadata.token_endpoint||!metadata.jwks_uri)throw new Error("Provider discovery is missing authorization, token, or signing-key endpoints");
+  return configuration;
+}
 function getOidcConfiguration(settings:OidcRuntimeSettings) {
   if(!settings.enabled||!settings.issuerUrl||!settings.clientId||!settings.redirectUri)throw new Error("OIDC is not configured");
   const key=`${settings.issuerUrl}|${settings.clientId}|${settings.clientSecret??""}`;
-  if(oidcConfiguration?.key!==key)oidcConfiguration={key,value:oidc.discovery(new URL(settings.issuerUrl),settings.clientId,settings.clientSecret??undefined)};
+  if(oidcConfiguration?.key!==key)oidcConfiguration={key,value:discoverOidc(settings)};
   return oidcConfiguration.value;
 }
 
@@ -99,6 +106,7 @@ app.post("/api/auth/login", async (request, response) => {
 app.post("/api/auth/logout", async (request, response) => { await destroySession(request, response); return response.status(204).end(); });
 
 app.get("/api/auth/oidc/start", async (request, response) => {
+  try {
   const settings=await loadOidcSettings();
   if (!settings.enabled||!settings.redirectUri) return response.status(404).json({ error: "OIDC is not configured" });
   const verifier = oidc.randomPKCECodeVerifier();
@@ -107,25 +115,34 @@ app.get("/api/auth/oidc/start", async (request, response) => {
   await pool.query("INSERT INTO oidc_flows(state_hash,code_verifier,expires_at) VALUES($1,$2,now()+interval '10 minutes')", [hashToken(state), verifier]);
   const url = oidc.buildAuthorizationUrl(await getOidcConfiguration(settings), { redirect_uri: settings.redirectUri, scope: "openid email profile", state, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: "S256" });
   return response.redirect(url.href);
+  } catch(error) {
+    await writeSystemLog("error","api","oidc-start",error instanceof Error?error.message:String(error),{});
+    return response.redirect("/login?error=provider");
+  }
 });
 
 app.get("/api/auth/oidc/callback", async (request, response) => {
-  const settings=await loadOidcSettings();
-  if (!settings.enabled||!settings.redirectUri||!settings.issuerUrl || typeof request.query.state !== "string") return response.redirect("/login?error=oidc");
-  const flow = await pool.query("DELETE FROM oidc_flows WHERE state_hash=$1 AND expires_at>now() RETURNING code_verifier", [hashToken(request.query.state)]);
-  if (!flow.rowCount) return response.redirect("/login?error=oidc");
-  const callback = new URL(settings.redirectUri); callback.search = new URL(request.originalUrl, "http://localhost").search;
-  const tokens = await oidc.authorizationCodeGrant(await getOidcConfiguration(settings), callback, { pkceCodeVerifier: flow.rows[0].code_verifier, expectedState: request.query.state });
-  const claims = tokens.claims();
-  if (!claims?.sub || typeof claims.email !== "string") return response.redirect("/login?error=email");
-  const issuer = settings.issuerUrl; const email = claims.email.toLowerCase(); const displayName = typeof claims.name === "string" ? claims.name : email;
-  const existing = await pool.query("SELECT id,oidc_issuer,oidc_subject FROM users WHERE email=$1", [email]);
-  if (existing.rowCount && (existing.rows[0].oidc_issuer !== issuer || existing.rows[0].oidc_subject !== claims.sub)) return response.redirect("/login?error=link");
-  const user = existing.rowCount
-    ? await pool.query("UPDATE users SET display_name=$2,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id", [existing.rows[0].id, displayName])
-    : await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,last_login_at) VALUES($1,$2,$3,$4,now()) RETURNING id`, [email, displayName, issuer, claims.sub]);
-  await createSession(request, response, user.rows[0].id);
-  return response.redirect("/#overview");
+  try{
+    const settings=await loadOidcSettings();
+    if(request.query.error)return response.redirect(`/login?error=denied`);
+    if (!settings.enabled||!settings.redirectUri||!settings.issuerUrl || typeof request.query.state !== "string") return response.redirect("/login?error=oidc");
+    const flow = await pool.query("DELETE FROM oidc_flows WHERE state_hash=$1 AND expires_at>now() RETURNING code_verifier", [hashToken(request.query.state)]);
+    if (!flow.rowCount) return response.redirect("/login?error=state");
+    const callback = new URL(settings.redirectUri); callback.search = new URL(request.originalUrl, "http://localhost").search;
+    const configuration=await getOidcConfiguration(settings),tokens = await oidc.authorizationCodeGrant(configuration, callback, { pkceCodeVerifier: flow.rows[0].code_verifier, expectedState: request.query.state });
+    const tokenClaims=tokens.claims();if(!tokenClaims?.sub)return response.redirect("/login?error=claims");
+    let claims:Record<string,unknown>={...tokenClaims};
+    if(typeof claims.email!=="string"&&tokens.access_token){try{claims={...claims,...await oidc.fetchUserInfo(configuration,tokens.access_token,tokenClaims.sub)};}catch{/* Missing UserInfo is reported as a missing email claim below. */}}
+    if(typeof claims.email!=="string")return response.redirect("/login?error=email");
+    const issuer=typeof tokenClaims.iss==="string"?tokenClaims.iss:settings.issuerUrl,email=claims.email.toLowerCase(),displayName=typeof claims.name==="string"?claims.name:typeof claims.preferred_username==="string"?claims.preferred_username:email;
+    const existing=await pool.query("SELECT id,enabled,oidc_issuer,oidc_subject FROM users WHERE lower(email)=lower($1)",[email]);
+    if(existing.rowCount&&!existing.rows[0].enabled)return response.redirect("/login?error=disabled");
+    if(existing.rowCount&&existing.rows[0].oidc_subject&&(existing.rows[0].oidc_issuer!==issuer||existing.rows[0].oidc_subject!==tokenClaims.sub))return response.redirect("/login?error=link");
+    const user=existing.rowCount
+      ?await pool.query("UPDATE users SET display_name=$2,oidc_issuer=$3,oidc_subject=$4,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id",[existing.rows[0].id,displayName,issuer,tokenClaims.sub])
+      :await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,last_login_at) VALUES($1,$2,$3,$4,now()) RETURNING id`,[email,displayName,issuer,tokenClaims.sub]);
+    await createSession(request,response,user.rows[0].id);return response.redirect("/#overview");
+  }catch(error){await writeSystemLog("error","api","oidc-callback",error instanceof Error?error.message:String(error),{});return response.redirect("/login?error=provider");}
 });
 
 app.get("/api/public/status", async (_request, response) => {
@@ -241,15 +258,22 @@ app.put("/api/settings/authentication/oidc",async(request,response)=>{
   if(!parsed.success)return response.status(400).json({error:"Enter valid issuer and callback URLs"});
   if(parsed.data.enabled&&(!parsed.data.issuerUrl||!parsed.data.clientId||!parsed.data.redirectUri))return response.status(400).json({error:"Issuer URL, client ID and callback URL are required when OIDC is enabled"});
   if(!parsed.data.localAccountsEnabled&&!parsed.data.enabled)return response.status(400).json({error:"Enable and configure OIDC before disabling local sign-in"});
+  if(!parsed.data.localAccountsEnabled){
+    const linkedAdmin=await pool.query("SELECT 1 FROM users WHERE enabled=true AND role='admin' AND oidc_subject IS NOT NULL LIMIT 1");
+    if(!linkedAdmin.rowCount)return response.status(409).json({error:"Local sign-in stays enabled until an administrator has signed in successfully through OIDC at least once"});
+  }
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
+  if(parsed.data.enabled){const current=await loadOidcSettings(),secret=parsed.data.clientSecret||current.clientSecret;if(!secret)return response.status(400).json({error:"Client secret is required for the confidential OIDC client"});try{await discoverOidc({issuerUrl:parsed.data.issuerUrl,clientId:parsed.data.clientId,clientSecret:secret});}catch(error){return response.status(400).json({error:`Provider discovery failed: ${error instanceof Error?error.message:"unable to contact issuer"}`});}}
   await pool.query(`INSERT INTO oidc_settings(singleton,enabled,local_accounts_enabled,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
     VALUES(true,$1,$2,NULLIF($3,''),NULLIF($4,''),CASE WHEN $5='' THEN NULL ELSE pgp_sym_encrypt($5,$6) END,NULLIF($7,''),$8)
     ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,local_accounts_enabled=EXCLUDED.local_accounts_enabled,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
     client_secret_encrypted=CASE WHEN $5='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
     redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.localAccountsEnabled,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
   oidcConfiguration=null;
-  return response.json({saved:true});
+  return response.json({saved:true,tested:parsed.data.enabled});
 });
+
+app.post("/api/settings/authentication/oidc/test",async(request,response)=>{if(!requireAdmin(request,response))return;try{const settings=await loadOidcSettings();if(!settings.issuerUrl||!settings.clientId)return response.status(409).json({error:"Save the issuer URL and client ID first"});const configuration=await discoverOidc(settings),metadata=configuration.serverMetadata();return response.json({ok:true,issuer:metadata.issuer,authorizationEndpoint:metadata.authorization_endpoint,tokenEndpoint:metadata.token_endpoint,userInfoEndpoint:metadata.userinfo_endpoint??null,jwksUri:metadata.jwks_uri,pkceSupported:metadata.code_challenge_methods_supported?.includes("S256")??false});}catch(error){return response.status(400).json({error:`Provider test failed: ${error instanceof Error?error.message:"unable to contact issuer"}`});}});
 
 app.get("/api/dashboard", async (_request, response) => {
   const [counts, devices, workers, incidents, changes, databaseRuntime] = await Promise.all([
