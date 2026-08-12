@@ -94,11 +94,132 @@ On first launch, HedgeSight asks you to create the initial local administrator. 
 
 Local accounts use scrypt password hashing and server-side sessions. Administrators can add, edit, disable, re-password, and delete accounts in **Settings → Account management**; the original bootstrap administrator is protected from modification and deletion.
 
-Optional OAuth2-based login uses OpenID Connect Authorization Code flow with PKCE. Configure it directly in **Settings → Authentication** or use the `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` environment variables as initial defaults. Settings saved through the interface take effect immediately and the client secret is encrypted with `CONFIG_ENCRYPTION_KEY`. For the default local deployment the callback is `http://localhost:8080/api/auth/oidc/callback`. Set `COOKIE_SECURE=true` and `TRUST_PROXY=true` when HTTPS terminates at a trusted reverse proxy.
-
-HedgeSight automatically restores local sign-in when it is disabled but no enabled OIDC-linked administrator exists. For emergency recovery after an identity-provider failure, temporarily set `LOCAL_AUTH_RECOVERY=true`, redeploy the application, sign in locally, repair the OIDC configuration, and then remove the override.
-
 The default stack contains the application, one local worker, and PostgreSQL. The application runs migrations automatically and adds a built-in health check.
+
+## OpenID Connect, Authentik and reverse proxies
+
+Optional single sign-on uses the OpenID Connect Authorization Code flow with PKCE. Configure it under **Settings → Authentication** or provide `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` as initial environment defaults. Settings saved in the interface take effect immediately and the client secret is encrypted using `CONFIG_ENCRYPTION_KEY`.
+
+The quick-setup callback is generated in the browser from the current public origin; no deployment hostname is embedded in the source or container image. If HedgeSight is opened at `https://monitoring.example.net`, its callback is:
+
+```text
+https://monitoring.example.net/api/auth/oidc/callback
+```
+
+Register that exact value as a **Strict** redirect URI in the identity provider. Scheme, hostname, port when non-standard, path, and trailing slash behaviour must match exactly.
+
+### Authentik configuration
+
+Create an Authentik application with an **OAuth2/OpenID Provider** using a confidential client and a signing key. HedgeSight uses provider discovery, so it asks for an issuer instead of separate authorization, token, and UserInfo endpoints. With an Authentik application slug of `hedgesight`, the values normally map as follows:
+
+| Authentik / generic OAuth value | HedgeSight setting |
+| --- | --- |
+| Provider-specific issuer, for example `https://auth.example.net/application/o/hedgesight/` | Issuer URL |
+| Client ID | Client ID |
+| Client secret | Client secret |
+| HedgeSight public callback | Callback URL and Authentik Strict redirect URI |
+| `openid email profile` plus an optional group scope | Requested scopes |
+| User identifier | HedgeSight uses the `email` claim |
+
+Do not enter Authentik's `/application/o/authorize/` URL as the issuer. It is an authorization endpoint. HedgeSight obtains it, along with the token, UserInfo, and signing-key endpoints, from:
+
+```text
+https://auth.example.net/application/o/hedgesight/.well-known/openid-configuration
+```
+
+Copy the `issuer` value returned by that document into HedgeSight. **Test current settings** validates values presently entered in the form; **Save and validate** tests discovery before committing them.
+
+### Account provisioning and group roles
+
+Automatic provisioning creates a HedgeSight account after a previously unknown user authenticates successfully and supplies an email address. The safe fallback role is **Viewer**, but it can be changed to Operator or Administrator.
+
+Optional group mapping accepts a configurable claim, normally `groups`, containing an array of group names. Configure comma-separated Viewer, Operator, and Administrator group names in HedgeSight. Matching is case-insensitive and precedence is Administrator, Operator, Viewer, then the fallback provisioning role. OIDC-only accounts resynchronise their role at login; accounts retaining a local password keep their manually assigned HedgeSight role.
+
+For Authentik, add or select a scope/property mapping that emits group names, add that mapping's scope name to HedgeSight's requested scopes, and set the corresponding group claim name. A typical configuration is:
+
+```text
+Requested scopes: openid email profile groups
+Group claim name: groups
+Viewer groups: HedgeSight Viewers
+Operator groups: HedgeSight Operators
+Administrator groups: HedgeSight Administrators
+```
+
+### Traefik
+
+When using HedgeSight's built-in OIDC, do not attach an Authentik forward-auth middleware to the main HedgeSight router. Doing so authenticates the request before HedgeSight can present its own login and creates two independent authentication layers. HedgeSight protects its private APIs with its own session. The status page and its read-only API can retain higher-priority explicit public routes:
+
+```yaml
+http:
+  routers:
+    hedgesight-status:
+      rule: "Host(`monitoring.example.net`) && Path(`/status`)"
+      priority: 300
+      entryPoints: [websecure]
+      tls: { certResolver: le }
+      service: hedgesight-svc
+
+    hedgesight-public-api:
+      rule: "Host(`monitoring.example.net`) && Path(`/api/public/status`)"
+      priority: 300
+      entryPoints: [websecure]
+      tls: { certResolver: le }
+      service: hedgesight-svc
+      middlewares: [hedgesight-public-ratelimit]
+
+    hedgesight-assets:
+      rule: "Host(`monitoring.example.net`) && PathPrefix(`/assets/`)"
+      priority: 300
+      entryPoints: [websecure]
+      tls: { certResolver: le }
+      service: hedgesight-svc
+
+    hedgesight-app:
+      rule: "Host(`monitoring.example.net`)"
+      priority: 10
+      entryPoints: [websecure]
+      tls: { certResolver: le }
+      service: hedgesight-svc
+
+  middlewares:
+    hedgesight-public-ratelimit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 10
+
+  services:
+    hedgesight-svc:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://HEDGESIGHT_HOST:8080"
+```
+
+Set these application environment values when Traefik terminates HTTPS:
+
+```text
+TRUST_PROXY=true
+COOKIE_SECURE=true
+```
+
+### Lockout prevention and recovery
+
+Keep local authentication enabled until an administrator has completed a successful OIDC login. HedgeSight refuses to disable local sign-in before an enabled OIDC-linked administrator exists and automatically exposes local login if an older configuration disabled it without such an administrator.
+
+If the identity provider later becomes unavailable, temporarily add this environment variable and redeploy only the application service:
+
+```text
+LOCAL_AUTH_RECOVERY=true
+```
+
+Sign in locally, repair and test OIDC, then remove the override and redeploy. The equivalent direct PostgreSQL recovery is:
+
+```sql
+UPDATE oidc_settings
+SET local_accounts_enabled = true
+WHERE singleton = true;
+```
 
 ## Use an external PostgreSQL database
 
