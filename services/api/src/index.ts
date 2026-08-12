@@ -36,13 +36,13 @@ app.get("/api/version", (_request, response) => {
 
 const credentialsSchema = z.object({ email: z.string().trim().email().max(254).transform(value => value.toLowerCase()), password: z.string().min(12).max(256) });
 const loginSchema = z.object({ identifier: z.string().trim().min(1).max(254), password: z.string().min(12).max(256) });
-type OidcRuntimeSettings = { enabled:boolean;localAccountsEnabled:boolean;issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
+type OidcRuntimeSettings = { enabled:boolean;localAccountsEnabled:boolean;automaticProvisioning:boolean;defaultRole:"viewer"|"operator"|"admin";issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
 async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
-  const result=await pool.query(`SELECT enabled,local_accounts_enabled AS "localAccountsEnabled",issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
+  const result=await pool.query(`SELECT enabled,local_accounts_enabled AS "localAccountsEnabled",automatic_provisioning AS "automaticProvisioning",default_role AS "defaultRole",issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
     CASE WHEN client_secret_encrypted IS NULL THEN NULL ELSE pgp_sym_decrypt(client_secret_encrypted,$1) END AS "clientSecret" FROM oidc_settings WHERE singleton=true`,[key]);
   if(result.rowCount)return {...result.rows[0],source:"database"};
-  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
+  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,automaticProvisioning:true,defaultRole:"viewer",issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
 }
 let oidcConfiguration: { key:string; value:Promise<oidc.Configuration> } | null = null;
 async function discoverOidc(settings:Pick<OidcRuntimeSettings,"issuerUrl"|"clientId"|"clientSecret">){
@@ -138,9 +138,10 @@ app.get("/api/auth/oidc/callback", async (request, response) => {
     const existing=await pool.query("SELECT id,enabled,oidc_issuer,oidc_subject FROM users WHERE lower(email)=lower($1)",[email]);
     if(existing.rowCount&&!existing.rows[0].enabled)return response.redirect("/login?error=disabled");
     if(existing.rowCount&&existing.rows[0].oidc_subject&&(existing.rows[0].oidc_issuer!==issuer||existing.rows[0].oidc_subject!==tokenClaims.sub))return response.redirect("/login?error=link");
+    if(!existing.rowCount&&!settings.automaticProvisioning)return response.redirect("/login?error=provisioning");
     const user=existing.rowCount
       ?await pool.query("UPDATE users SET display_name=$2,oidc_issuer=$3,oidc_subject=$4,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id",[existing.rows[0].id,displayName,issuer,tokenClaims.sub])
-      :await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,last_login_at) VALUES($1,$2,$3,$4,now()) RETURNING id`,[email,displayName,issuer,tokenClaims.sub]);
+      :await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,role,last_login_at) VALUES($1,$2,$3,$4,$5,now()) RETURNING id`,[email,displayName,issuer,tokenClaims.sub,settings.defaultRole]);
     await createSession(request,response,user.rows[0].id);return response.redirect("/#overview");
   }catch(error){await writeSystemLog("error","api","oidc-callback",error instanceof Error?error.message:String(error),{});return response.redirect("/login?error=provider");}
 });
@@ -247,14 +248,14 @@ app.get("/api/settings/authentication", async (request, response) => {
   const settings=await loadOidcSettings();
   response.json({
     localAccountsEnabled: settings.localAccountsEnabled,
-    oidc: { enabled: settings.enabled, issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
+    oidc: { enabled: settings.enabled, automaticProvisioning:settings.automaticProvisioning,defaultRole:settings.defaultRole,issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
     sessionDays: Math.max(1, Number(process.env.SESSION_DAYS ?? 7)), cookieSecure: process.env.COOKIE_SECURE === "true", trustProxy: process.env.TRUST_PROXY === "true",
   });
 });
 
 app.put("/api/settings/authentication/oidc",async(request,response)=>{
   if(!requireAdmin(request,response))return;
-  const parsed=z.object({enabled:z.boolean(),localAccountsEnabled:z.boolean().default(true),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
+  const parsed=z.object({enabled:z.boolean(),localAccountsEnabled:z.boolean().default(true),automaticProvisioning:z.boolean().default(true),defaultRole:z.enum(["viewer","operator","admin"]).default("viewer"),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
   if(!parsed.success)return response.status(400).json({error:"Enter valid issuer and callback URLs"});
   if(parsed.data.enabled&&(!parsed.data.issuerUrl||!parsed.data.clientId||!parsed.data.redirectUri))return response.status(400).json({error:"Issuer URL, client ID and callback URL are required when OIDC is enabled"});
   if(!parsed.data.localAccountsEnabled&&!parsed.data.enabled)return response.status(400).json({error:"Enable and configure OIDC before disabling local sign-in"});
@@ -264,16 +265,16 @@ app.put("/api/settings/authentication/oidc",async(request,response)=>{
   }
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
   if(parsed.data.enabled){const current=await loadOidcSettings(),secret=parsed.data.clientSecret||current.clientSecret;if(!secret)return response.status(400).json({error:"Client secret is required for the confidential OIDC client"});try{await discoverOidc({issuerUrl:parsed.data.issuerUrl,clientId:parsed.data.clientId,clientSecret:secret});}catch(error){return response.status(400).json({error:`Provider discovery failed: ${error instanceof Error?error.message:"unable to contact issuer"}`});}}
-  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,local_accounts_enabled,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
-    VALUES(true,$1,$2,NULLIF($3,''),NULLIF($4,''),CASE WHEN $5='' THEN NULL ELSE pgp_sym_encrypt($5,$6) END,NULLIF($7,''),$8)
-    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,local_accounts_enabled=EXCLUDED.local_accounts_enabled,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
-    client_secret_encrypted=CASE WHEN $5='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
-    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.localAccountsEnabled,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
+  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,local_accounts_enabled,automatic_provisioning,default_role,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
+    VALUES(true,$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),CASE WHEN $7='' THEN NULL ELSE pgp_sym_encrypt($7,$8) END,NULLIF($9,''),$10)
+    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,local_accounts_enabled=EXCLUDED.local_accounts_enabled,automatic_provisioning=EXCLUDED.automatic_provisioning,default_role=EXCLUDED.default_role,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
+    client_secret_encrypted=CASE WHEN $7='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
+    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.localAccountsEnabled,parsed.data.automaticProvisioning,parsed.data.defaultRole,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
   oidcConfiguration=null;
   return response.json({saved:true,tested:parsed.data.enabled});
 });
 
-app.post("/api/settings/authentication/oidc/test",async(request,response)=>{if(!requireAdmin(request,response))return;try{const settings=await loadOidcSettings();if(!settings.issuerUrl||!settings.clientId)return response.status(409).json({error:"Save the issuer URL and client ID first"});const configuration=await discoverOidc(settings),metadata=configuration.serverMetadata();return response.json({ok:true,issuer:metadata.issuer,authorizationEndpoint:metadata.authorization_endpoint,tokenEndpoint:metadata.token_endpoint,userInfoEndpoint:metadata.userinfo_endpoint??null,jwksUri:metadata.jwks_uri,pkceSupported:metadata.code_challenge_methods_supported?.includes("S256")??false});}catch(error){return response.status(400).json({error:`Provider test failed: ${error instanceof Error?error.message:"unable to contact issuer"}`});}});
+app.post("/api/settings/authentication/oidc/test",async(request,response)=>{if(!requireAdmin(request,response))return;try{const saved=await loadOidcSettings(),input=z.object({issuerUrl:z.string().trim().url(),clientId:z.string().trim().min(1),clientSecret:z.string().optional().default("")}).safeParse(request.body);const settings=input.success?{issuerUrl:input.data.issuerUrl,clientId:input.data.clientId,clientSecret:input.data.clientSecret||saved.clientSecret}:saved;if(!settings.issuerUrl||!settings.clientId)return response.status(409).json({error:"Enter an issuer URL and client ID first"});if(!settings.clientSecret)return response.status(409).json({error:"Enter the client secret, or save one first"});const configuration=await discoverOidc(settings),metadata=configuration.serverMetadata();return response.json({ok:true,issuer:metadata.issuer,authorizationEndpoint:metadata.authorization_endpoint,tokenEndpoint:metadata.token_endpoint,userInfoEndpoint:metadata.userinfo_endpoint??null,jwksUri:metadata.jwks_uri,pkceSupported:metadata.code_challenge_methods_supported?.includes("S256")??false});}catch(error){return response.status(400).json({error:`Provider test failed: ${error instanceof Error?error.message:"unable to contact issuer"}`});}});
 
 app.get("/api/dashboard", async (_request, response) => {
   const [counts, devices, workers, incidents, changes, databaseRuntime] = await Promise.all([

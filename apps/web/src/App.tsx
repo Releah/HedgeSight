@@ -175,6 +175,8 @@ type AuthenticationSettings = {
   localAccountsEnabled: boolean;
   oidc: {
     enabled: boolean;
+    automaticProvisioning: boolean;
+    defaultRole: "viewer" | "operator" | "admin";
     issuerUrl: string | null;
     clientId: string | null;
     clientIdConfigured: boolean;
@@ -1016,7 +1018,7 @@ function Login({
   onAuthenticated: () => void;
 }) {
   const loginError=new URLSearchParams(location.search).get("error");
-  const [error, setError] = useState(loginError?({denied:"Sign-in was cancelled or denied by the identity provider.",state:"The sign-in request expired or could not be verified. Please try again.",email:"The identity provider did not supply an email address. Enable the email scope mapping.",claims:"The identity provider returned an incomplete identity token.",link:"This email is already linked to a different OIDC identity.",disabled:"This HedgeSight account is disabled.",provider:"HedgeSight could not validate the provider response. Ask an administrator to check the OIDC test and system logs.",oidc:"Single sign-on is not completely configured."} as Record<string,string>)[loginError]??"Single sign-on could not be completed.":"");
+  const [error, setError] = useState(loginError?({denied:"Sign-in was cancelled or denied by the identity provider.",state:"The sign-in request expired or could not be verified. Please try again.",email:"The identity provider did not supply an email address. Enable the email scope mapping.",claims:"The identity provider returned an incomplete identity token.",link:"This email is already linked to a different OIDC identity.",disabled:"This HedgeSight account is disabled.",provisioning:"Your identity is valid, but automatic account provisioning is disabled. Ask an administrator to create your account.",provider:"HedgeSight could not validate the provider response. Ask an administrator to check the OIDC test and system logs.",oidc:"Single sign-on is not completely configured."} as Record<string,string>)[loginError]??"Single sign-on could not be completed.":"");
   const [databaseSetup,setDatabaseSetup]=useState(false);
   const [databaseBusy,setDatabaseBusy]=useState(false);
   async function configureDatabase(event:FormEvent<HTMLFormElement>){event.preventDefault();const data=new FormData(event.currentTarget);setDatabaseBusy(true);const response=await fetch("/api/auth/database",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({connectionString:data.get("connectionString")})});if(response.ok){setError("");setTimeout(()=>location.reload(),2500);}else{setError((await response.json()).error??"Unable to connect to PostgreSQL");setDatabaseBusy(false);}}
@@ -1226,6 +1228,7 @@ export function PrivateApp({
   const [accountError, setAccountError] = useState("");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [authenticationMessage, setAuthenticationMessage] = useState("");
+  const [oidcBusy,setOidcBusy]=useState<"save"|"test"|null>(null);
   const [oidcTest,setOidcTest]=useState<{ok:boolean;issuer?:string;authorizationEndpoint?:string;tokenEndpoint?:string;userInfoEndpoint?:string|null;jwksUri?:string;pkceSupported?:boolean;error?:string}|null>(null);
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [monitoringAlerts,setMonitoringAlerts]=useState<MonitoringAlert[]>([]);
@@ -1700,20 +1703,23 @@ export function PrivateApp({
   }
   async function saveOidc(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setOidcBusy("save");setAuthenticationMessage("Validating provider…");setOidcTest(null);
     const data = new FormData(event.currentTarget);
-    const response = await fetch("/api/settings/authentication/oidc", {
+    try{const response = await fetch("/api/settings/authentication/oidc", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         enabled: data.get("enabled") === "on",
         localAccountsEnabled: data.get("localAccountsEnabled") === "on",
+        automaticProvisioning: data.get("automaticProvisioning") === "on",
+        defaultRole: data.get("defaultRole"),
         issuerUrl: data.get("issuerUrl"),
         clientId: data.get("clientId"),
         clientSecret: data.get("clientSecret"),
         redirectUri: data.get("redirectUri"),
       }),
     });
-    const body = await response.json();
+    const body = await response.json().catch(()=>({error:`Server returned ${response.status}`}));
     if (response.ok) {
       setAuthenticationSettings(
         await fetch("/api/settings/authentication").then((r) => r.json()),
@@ -1723,8 +1729,9 @@ export function PrivateApp({
       window.setTimeout(() => setAuthenticationMessage(""), 2500);
     } else
       setAuthenticationMessage(body.error ?? "Unable to save OIDC settings");
+    }catch(error){setAuthenticationMessage(error instanceof Error?error.message:"Unable to contact HedgeSight");}finally{setOidcBusy(null);}
   }
-  async function testOidc(){setOidcTest(null);const response=await fetch("/api/settings/authentication/oidc/test",{method:"POST"}),body=await response.json();setOidcTest(response.ok?body:{ok:false,error:body.error??"Provider test failed"});}
+  async function testOidc(form:HTMLFormElement|null){if(!form)return;setOidcBusy("test");setAuthenticationMessage("Testing provider discovery…");setOidcTest(null);const data=new FormData(form);try{const response=await fetch("/api/settings/authentication/oidc/test",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({issuerUrl:data.get("issuerUrl"),clientId:data.get("clientId"),clientSecret:data.get("clientSecret")})}),body=await response.json().catch(()=>({error:`Server returned ${response.status}`}));setOidcTest(response.ok?body:{ok:false,error:body.error??"Provider test failed"});setAuthenticationMessage(response.ok?"Provider discovery passed":"Provider discovery failed");}catch(error){const message=error instanceof Error?error.message:"Unable to contact HedgeSight";setOidcTest({ok:false,error:message});setAuthenticationMessage("Provider discovery failed");}finally{setOidcBusy(null);}}
   async function copyOidcValue(value:string){try{await navigator.clipboard.writeText(value);setAuthenticationMessage("Copied to clipboard");window.setTimeout(()=>setAuthenticationMessage(""),1500);}catch{setAuthenticationMessage("Copy was blocked by the browser; select the value manually.");}}
   async function saveRetention(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3229,6 +3236,18 @@ export function PrivateApp({
                         Enable OAuth2 / OIDC sign-in
                         <small>Adds the identity-provider button to the sign-in screen.</small>
                       </label>
+                      <label className="toggle-label">
+                        <input type="checkbox" name="automaticProvisioning" defaultChecked={authenticationSettings?.oidc.automaticProvisioning ?? true}/>{" "}
+                        Automatically provision new OIDC users
+                        <small>Creates an account after the provider successfully authenticates a previously unknown email address.</small>
+                      </label>
+                      <label>
+                        Provisioned user role
+                        <select name="defaultRole" defaultValue={authenticationSettings?.oidc.defaultRole ?? "viewer"}>
+                          <option value="viewer">Viewer — read-only</option><option value="operator">Operator — operational access</option><option value="admin">Administrator — full access</option>
+                        </select>
+                        <small>Viewer is recommended. Existing accounts keep their current role when their identity is linked.</small>
+                      </label>
                       <label>
                         Issuer URL
                         <input
@@ -3288,9 +3307,9 @@ export function PrivateApp({
                         >
                           {authenticationMessage}
                         </span>
-                        <button type="button" className="secondary" onClick={testOidc}>Test saved provider</button>
-                        <button className="primary">
-                          <ShieldCheck size={15} /> Save and validate
+                        <button type="button" className="secondary" disabled={oidcBusy!==null} onClick={(event)=>void testOidc(event.currentTarget.form)}>{oidcBusy==="test"?"Testing…":"Test current settings"}</button>
+                        <button className="primary" disabled={oidcBusy!==null}>
+                          <ShieldCheck size={15} /> {oidcBusy==="save"?"Validating…":"Save and validate"}
                         </button>
                       </div>
                       {oidcTest&&<div className={`oidc-test-result ${oidcTest.ok?"success":"failure"}`}><strong>{oidcTest.ok?"Provider discovery passed":"Provider test failed"}</strong>{oidcTest.ok?<dl><div><dt>Issuer</dt><dd>{oidcTest.issuer}</dd></div><div><dt>Authorization endpoint</dt><dd>{oidcTest.authorizationEndpoint}</dd></div><div><dt>Token endpoint</dt><dd>{oidcTest.tokenEndpoint}</dd></div><div><dt>PKCE S256 advertised</dt><dd>{oidcTest.pkceSupported?"Yes":"No (HedgeSight still sends PKCE)"}</dd></div></dl>:<p>{oidcTest.error}</p>}</div>}
