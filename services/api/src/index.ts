@@ -44,6 +44,11 @@ async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
   if(result.rowCount)return {...result.rows[0],source:"database"};
   return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,automaticProvisioning:true,defaultRole:"viewer",groupClaim:"groups",requestedScopes:"openid email profile",viewerGroups:[],operatorGroups:[],adminGroups:[],issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
 }
+async function effectiveLocalAccountsEnabled(settings:OidcRuntimeSettings){
+  if(settings.localAccountsEnabled||process.env.LOCAL_AUTH_RECOVERY==="true")return true;
+  const linkedAdmin=await pool.query("SELECT 1 FROM users WHERE enabled=true AND role='admin' AND oidc_subject IS NOT NULL LIMIT 1");
+  return !linkedAdmin.rowCount;
+}
 function oidcGroups(claims:Record<string,unknown>,claim:string){const value=claims[claim];return (Array.isArray(value)?value:typeof value==="string"?value.split(/[ ,]+/):[]).filter((item):item is string=>typeof item==="string").map(item=>item.trim().toLowerCase()).filter(Boolean);}
 function oidcRole(settings:OidcRuntimeSettings,claims:Record<string,unknown>){const groups=new Set(oidcGroups(claims,settings.groupClaim)),matches=(configured:string[])=>configured.some(group=>groups.has(group.toLowerCase()));return matches(settings.adminGroups)?"admin":matches(settings.operatorGroups)?"operator":matches(settings.viewerGroups)?"viewer":settings.defaultRole;}
 let oidcConfiguration: { key:string; value:Promise<oidc.Configuration> } | null = null;
@@ -63,7 +68,7 @@ function getOidcConfiguration(settings:OidcRuntimeSettings) {
 
 app.get("/api/auth/status", async (_request, response) => {
   const [result,oidcSettings] = await Promise.all([pool.query("SELECT EXISTS(SELECT 1 FROM users) AS configured"),loadOidcSettings()]);
-  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcSettings.enabled, localAccountsEnabled: oidcSettings.localAccountsEnabled });
+  response.json({ setupRequired: !result.rows[0].configured, oidcEnabled: oidcSettings.enabled, localAccountsEnabled: await effectiveLocalAccountsEnabled(oidcSettings) });
 });
 
 const databaseSetupSchema=z.object({connectionString:z.string().trim().min(1).max(4000)});
@@ -93,7 +98,8 @@ app.post("/api/auth/setup", async (request, response) => {
 });
 
 app.post("/api/auth/login", async (request, response) => {
-  if (!(await loadOidcSettings()).localAccountsEnabled) return response.status(403).json({ error: "Local sign-in is disabled" });
+  const oidcSettings=await loadOidcSettings();
+  if (!(await effectiveLocalAccountsEnabled(oidcSettings))) return response.status(403).json({ error: "Local sign-in is disabled" });
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success) return response.status(401).json({ error: "Invalid account name, email or password" });
   const result = await pool.query(`SELECT id,password_hash FROM users
@@ -248,8 +254,10 @@ app.post("/api/settings/accounts", async (request, response) => {
 app.get("/api/settings/authentication", async (request, response) => {
   if (!requireAdmin(request, response)) return;
   const settings=await loadOidcSettings();
+  const localAccountsEnabled=await effectiveLocalAccountsEnabled(settings);
   response.json({
-    localAccountsEnabled: settings.localAccountsEnabled,
+    localAccountsEnabled,
+    localAuthRecoveryActive:localAccountsEnabled&&!settings.localAccountsEnabled,
     oidc: { enabled: settings.enabled, automaticProvisioning:settings.automaticProvisioning,defaultRole:settings.defaultRole,groupClaim:settings.groupClaim,requestedScopes:settings.requestedScopes,viewerGroups:settings.viewerGroups,operatorGroups:settings.operatorGroups,adminGroups:settings.adminGroups,issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
     sessionDays: Math.max(1, Number(process.env.SESSION_DAYS ?? 7)), cookieSecure: process.env.COOKIE_SECURE === "true", trustProxy: process.env.TRUST_PROXY === "true",
   });

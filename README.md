@@ -96,6 +96,8 @@ Local accounts use scrypt password hashing and server-side sessions. Administrat
 
 Optional OAuth2-based login uses OpenID Connect Authorization Code flow with PKCE. Configure it directly in **Settings → Authentication** or use the `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` environment variables as initial defaults. Settings saved through the interface take effect immediately and the client secret is encrypted with `CONFIG_ENCRYPTION_KEY`. For the default local deployment the callback is `http://localhost:8080/api/auth/oidc/callback`. Set `COOKIE_SECURE=true` and `TRUST_PROXY=true` when HTTPS terminates at a trusted reverse proxy.
 
+HedgeSight automatically restores local sign-in when it is disabled but no enabled OIDC-linked administrator exists. For emergency recovery after an identity-provider failure, temporarily set `LOCAL_AUTH_RECOVERY=true`, redeploy the application, sign in locally, repair the OIDC configuration, and then remove the override.
+
 The default stack contains the application, one local worker, and PostgreSQL. The application runs migrations automatically and adds a built-in health check.
 
 ## Use an external PostgreSQL database
