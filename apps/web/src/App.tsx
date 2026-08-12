@@ -12,6 +12,7 @@ import {
   Archive,
   ArrowRight,
   Bell,
+  BellRing,
   Box,
   CalendarClock,
   ChevronDown,
@@ -39,6 +40,9 @@ import {
   Wrench,
   LockKeyhole,
   FileText,
+  Folder,
+  Send,
+  VolumeX,
   X,
 } from "lucide-react";
 
@@ -50,6 +54,7 @@ type View =
   | "tasks"
   | "maintenance"
   | "backups"
+  | "alerts"
   | "logs"
   | "workers"
   | "settings";
@@ -149,6 +154,11 @@ type StorageStatus = {
   } | null;
 };
 type SettingsTab = "data" | "credentials" | "accounts" | "authentication" | "system";
+type AlertFolder={id:string;name:string;position:number;mutedUntil:string|null;ruleCount:number};
+type AlertChannel={id:string;name:string;kind:"discord"|"teams"|"webhook";enabled:boolean;mutedUntil:string|null;lastSuccessAt:string|null;lastFailureAt:string|null;lastError:string|null};
+type AlertRule={id:string;name:string;folderId:string|null;triggerKind:"check_down"|"check_degraded"|"check_recovered";severity:"info"|"warning"|"critical";conditions:{deviceIds?:string[];checkKinds?:string[]};channelIds:string[];enabled:boolean;mutedUntil:string|null;cooldownSeconds:number;notifyRecovery:boolean;lastTriggeredAt:string|null};
+type AlertDelivery={id:string;channelName:string;channelKind:string;status:string;attempts:number;lastError:string|null;deliveredAt:string|null;createdAt:string;title:string;message:string;severity:string;triggerKind:string};
+type AlertData={folders:AlertFolder[];channels:AlertChannel[];rules:AlertRule[];deliveries:AlertDelivery[];summary:{enabledRules:number;enabledChannels:number;failedDeliveries:number;deliveredToday:number}};
 type StoredCredential={id:string;name:string;username:string;deviceCount:number;createdAt:string;updatedAt:string};
 type DatabaseStatus={source:string;host:string;port:string;database:string;tls:string};
 type BackupProfile={id:string;name:string;description:string;kind:"network_script"|"server_files";script:string;paths:string[];jobCount:number;updatedAt:string};
@@ -299,6 +309,7 @@ const pageCopy: Record<
   tasks:{eyebrow:"FOLLOW-UP ACTIONS",title:"Tasks",description:"Track root-cause work and follow-up actions linked to incidents."},
   maintenance:{eyebrow:"CHANGE MANAGEMENT",title:"Maintenance",description:"Review, extend and complete planned maintenance windows."},
   backups:{eyebrow:"CONFIGURATION PROTECTION",title:"Backups",description:"Schedule and verify encrypted network and server backups."},
+  alerts:{eyebrow:"NOTIFICATION AUTOMATION",title:"Alerts",description:"Route monitoring events to the right people and services."},
   logs:{eyebrow:"OBSERVABILITY",title:"Logs",description:"Search platform activity, collector failures and diagnostic events."},
   workers: {
     eyebrow: "CONTROL PLANE",
@@ -1178,6 +1189,28 @@ export function VersionStamp() {
   return <div className="version-stamp" title={`HedgeSight ${build.version} (${build.channel})`}>v{version}</div>;
 }
 
+function AlertsPage({devices,canEdit,canAdmin}:{devices:MonitoringDevice[];canEdit:boolean;canAdmin:boolean}){
+  const [data,setData]=useState<AlertData|null>(null),[tab,setTab]=useState<"overview"|"rules"|"channels"|"history">("overview"),[message,setMessage]=useState(""),[ruleDialog,setRuleDialog]=useState(false);
+  const load=()=>void fetch("/api/alerts").then(async response=>{if(!response.ok)throw new Error((await response.json()).error??"Unable to load alerts");return response.json()}).then(setData).catch(error=>setMessage(error.message));
+  useEffect(()=>{load();const timer=setInterval(load,15_000);return()=>clearInterval(timer)},[]);
+  async function request(url:string,options:RequestInit){const response=await fetch(url,options);const body=response.status===204?{}:await response.json().catch(()=>({}));setMessage(response.ok?"Saved":body.error??"Request failed");if(response.ok)load();return response.ok;}
+  async function createFolder(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,d=new FormData(form);if(await request("/api/alerts/folders",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:d.get("name")})}))form.reset();}
+  async function createChannel(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,d=new FormData(form);if(await request("/api/alerts/channels",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:d.get("name"),kind:d.get("kind"),endpoint:d.get("endpoint"),enabled:true})}))form.reset();}
+  async function createRule(event:FormEvent<HTMLFormElement>){event.preventDefault();const d=new FormData(event.currentTarget);const ok=await request("/api/alerts/rules",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:d.get("name"),folderId:d.get("folderId")||null,triggerKind:d.get("triggerKind"),severity:d.get("severity"),deviceIds:d.getAll("deviceIds"),checkKinds:d.getAll("checkKinds"),channelIds:d.getAll("channelIds"),cooldownSeconds:Number(d.get("cooldownSeconds")),notifyRecovery:d.get("notifyRecovery")==="on",enabled:true})});if(ok)setRuleDialog(false);}
+  if(!data)return <div className="alerts-loading"><BellRing/> {message||"Loading alerting…"}</div>;
+  const unfiled=data.rules.filter(rule=>!rule.folderId);
+  const ruleCard=(rule:AlertRule)=><article className={`alert-rule-card ${rule.enabled?"":"disabled"}`} key={rule.id} draggable={canEdit} onDragStart={event=>event.dataTransfer.setData("text/alert-rule",rule.id)}><div><span className={`alert-severity ${rule.severity}`}>{rule.severity}</span><strong>{rule.name}</strong></div><p>{rule.triggerKind.replaceAll("_"," ")} · {rule.conditions?.deviceIds?.length||"all"} devices · {rule.channelIds.length} channel{rule.channelIds.length===1?"":"s"}</p><small>{rule.lastTriggeredAt?`Last triggered ${relativeTime(rule.lastTriggeredAt)}`:"Never triggered"} · cooldown {Math.round(rule.cooldownSeconds/60)}m</small>{canEdit&&<footer><button className="secondary" onClick={()=>void request(`/api/alerts/rules/${rule.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!rule.enabled})})}>{rule.enabled?"Disable":"Enable"}</button><button className="secondary" onClick={()=>void request(`/api/alerts/rules/${rule.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({mutedUntil:rule.mutedUntil?null:new Date(Date.now()+3600000).toISOString()})})}><VolumeX size={12}/>{rule.mutedUntil?"Unmute":"Mute 1h"}</button><button className="icon-button danger" onClick={()=>void request(`/api/alerts/rules/${rule.id}`,{method:"DELETE"})}><Trash2 size={13}/></button></footer>}</article>;
+  return <section className="alerts-page">
+    <div className="alerts-tabs">{(["overview","rules","channels","history"] as const).map(item=><button key={item} className={tab===item?"active":""} onClick={()=>setTab(item)}>{item==="history"?"Delivery history":item}</button>)}</div>
+    {message&&<div className="alert-feedback">{message}<button onClick={()=>setMessage("")}><X size={13}/></button></div>}
+    {tab==="overview"&&<><section className="alert-summary"><article><BellRing/><small>ENABLED RULES</small><strong>{data.summary.enabledRules}</strong></article><article><Send/><small>ACTIVE CHANNELS</small><strong>{data.summary.enabledChannels}</strong></article><article><ShieldCheck/><small>DELIVERED TODAY</small><strong>{data.summary.deliveredToday}</strong></article><article className={data.summary.failedDeliveries?"danger":""}><Activity/><small>FAILED DELIVERIES</small><strong>{data.summary.failedDeliveries}</strong></article></section><Panel title="Recent delivery activity" subtitle="Latest notification attempts across every channel" className="full-panel"><div className="alert-delivery-list">{data.deliveries.slice(0,8).map(item=><article key={item.id}><StatusBadge status={item.status}/><div><strong>{item.title}</strong><small>{item.channelName} · {relativeTime(item.createdAt)}</small></div><span className={`alert-severity ${item.severity}`}>{item.severity}</span></article>)}{!data.deliveries.length&&<div className="chat-empty">No alert notifications have been generated yet.</div>}</div></Panel></>}
+    {tab==="rules"&&<><div className="alert-page-actions"><span>Drag a rule onto a folder to organise it.</span>{canEdit&&<button className="primary" onClick={()=>setRuleDialog(true)}><Plus size={14}/> Build alert</button>}</div><section className="alert-folder-grid"><article className="alert-folder" onDragOver={event=>event.preventDefault()} onDrop={event=>{const id=event.dataTransfer.getData("text/alert-rule");if(id)void request(`/api/alerts/rules/${id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({folderId:null})})}}><header><Folder/><strong>Unfiled</strong><b>{unfiled.length}</b></header><div>{unfiled.map(ruleCard)}</div></article>{data.folders.map(folder=><article className="alert-folder" key={folder.id} onDragOver={event=>event.preventDefault()} onDrop={event=>{const id=event.dataTransfer.getData("text/alert-rule");if(id)void request(`/api/alerts/rules/${id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({folderId:folder.id})})}}><header><Folder/><input defaultValue={folder.name} disabled={!canEdit} onBlur={event=>event.target.value!==folder.name&&void request(`/api/alerts/folders/${folder.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({name:event.target.value,mutedUntil:folder.mutedUntil})})}/><b>{folder.ruleCount}</b>{canEdit&&<><button title="Mute folder for one hour" onClick={()=>void request(`/api/alerts/folders/${folder.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({name:folder.name,mutedUntil:folder.mutedUntil?null:new Date(Date.now()+3600000).toISOString()})})}><VolumeX size={12}/></button><button title="Delete empty folder" disabled={folder.ruleCount>0} onClick={()=>void request(`/api/alerts/folders/${folder.id}`,{method:"DELETE"})}><Trash2 size={12}/></button></>}</header><div>{data.rules.filter(rule=>rule.folderId===folder.id).map(ruleCard)}</div></article>)}</section>{canEdit&&<Panel title="Create folder" subtitle="Folders organise rules and can be muted together" className="full-panel"><form className="alert-folder-form" onSubmit={createFolder}><input name="name" required maxLength={120} placeholder="Critical infrastructure"/><button className="primary"><Plus size={14}/>Add folder</button></form></Panel>}</>}
+    {tab==="channels"&&<><section className="alert-channel-grid">{data.channels.map(channel=><article key={channel.id}><span className={`channel-kind ${channel.kind}`}><Send/></span><div><strong>{channel.name}</strong><small>{channel.kind} · secret endpoint hidden</small><p>{channel.lastError||channel.lastSuccessAt?channel.lastError??`Last success ${relativeTime(channel.lastSuccessAt)}`:"Not tested yet"}</p></div>{canAdmin&&<footer><button className="secondary" onClick={()=>void request(`/api/alerts/channels/${channel.id}/test`,{method:"POST"})}>Send test</button><button className="secondary" onClick={()=>void request(`/api/alerts/channels/${channel.id}/state`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!channel.enabled})})}>{channel.enabled?"Disable":"Enable"}</button><button className="icon-button danger" onClick={()=>void request(`/api/alerts/channels/${channel.id}`,{method:"DELETE"})}><Trash2 size={13}/></button></footer>}</article>)}</section>{canAdmin&&<Panel title="Add notification channel" subtitle="Webhook endpoints are encrypted and never returned to the browser" className="full-panel"><form className="alert-channel-form" onSubmit={createChannel}><label>Name<input name="name" required placeholder="Network operations"/></label><label>Type<select name="kind"><option value="discord">Discord webhook</option><option value="teams">Teams Workflow webhook</option><option value="webhook">Generic JSON webhook</option></select></label><label>Webhook URL<input name="endpoint" type="url" required placeholder="https://…" autoComplete="off"/></label><button className="primary"><LockKeyhole size={14}/>Encrypt and save</button></form></Panel>}</>}
+    {tab==="history"&&<Panel title="Delivery history" subtitle="Successful, failed and retried notification attempts" className="full-panel"><div className="table-wrap"><table><thead><tr><th>ALERT</th><th>CHANNEL</th><th>STATUS</th><th>ATTEMPTS</th><th>CREATED</th><th>DETAIL</th></tr></thead><tbody>{data.deliveries.map(item=><tr key={item.id}><td><strong>{item.title}</strong><small className="account-email">{item.triggerKind.replaceAll("_"," ")}</small></td><td>{item.channelName}<small className="account-email">{item.channelKind}</small></td><td><StatusBadge status={item.status}/></td><td>{item.attempts}</td><td>{new Date(item.createdAt).toLocaleString()}</td><td>{item.lastError||item.message}</td></tr>)}</tbody></table></div></Panel>}
+    {ruleDialog&&<div className="modal-backdrop" onMouseDown={()=>setRuleDialog(false)}><section className="modal alert-rule-modal" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" onClick={()=>setRuleDialog(false)}><X/></button><p className="eyebrow">IF THIS, THEN NOTIFY</p><h2>Build alert rule</h2><form onSubmit={createRule}><label>Rule name<input name="name" required placeholder="Production device unavailable"/></label><label>Folder<select name="folderId"><option value="">Unfiled</option>{data.folders.map(folder=><option value={folder.id} key={folder.id}>{folder.name}</option>)}</select></label><label>When<select name="triggerKind"><option value="check_down">A check becomes down</option><option value="check_degraded">A check becomes degraded</option><option value="check_recovered">A check recovers</option></select></label><label>Severity<select name="severity"><option value="warning">Warning</option><option value="critical">Critical</option><option value="info">Information</option></select></label><label>Cooldown<input name="cooldownSeconds" type="number" min="0" defaultValue="300"/><small>seconds before this rule can fire again</small></label><fieldset><legend>Only these devices <small>(none means all)</small></legend>{devices.map(device=><label key={device.id}><input type="checkbox" name="deviceIds" value={device.id}/>{device.name}</label>)}</fieldset><fieldset><legend>Check types <small>(none means all)</small></legend>{["ping","http","ssh","vsphere"].map(kind=><label key={kind}><input type="checkbox" name="checkKinds" value={kind}/>{kind.toUpperCase()}</label>)}</fieldset><fieldset><legend>Notify through</legend>{data.channels.filter(channel=>channel.enabled).map(channel=><label key={channel.id}><input type="checkbox" name="channelIds" value={channel.id}/>{channel.name} <small>{channel.kind}</small></label>)}</fieldset><label className="toggle-label"><input type="checkbox" name="notifyRecovery" defaultChecked/>Send a recovery notification when applicable</label><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setRuleDialog(false)}>Cancel</button><button className="primary"><BellRing size={14}/>Create alert</button></div></form></section></div>}
+  </section>;
+}
+
 export function PrivateApp({
   user,
   onLogout,
@@ -1931,6 +1964,7 @@ export function PrivateApp({
             "Incidents",
             <span className="nav-count alert">{openIncidents}</span>,
           )}
+          {nav("alerts", <BellRing />, "Alerts")}
           {nav("tasks", <ClipboardList />, "Tasks", <span className="nav-count">{tasks.filter(item=>item.status!=="completed").length}</span>)}
           {nav("maintenance", <CalendarClock />, "Maintenance", <span className="nav-count">{changes.filter(item=>item.status!=="completed").length}</span>)}
           {nav("backups", <HardDriveDownload />, "Backups")}
@@ -2857,6 +2891,7 @@ export function PrivateApp({
           </section>
         )}
         {view === "backups" && <BackupsPage devices={monitoring} credentials={credentials} canEdit={["admin","operator"].includes(user.role)}/>}
+        {view === "alerts" && <AlertsPage devices={monitoring} canEdit={["admin","operator"].includes(user.role)} canAdmin={user.role==="admin"}/>}
         {view === "logs" && <LogsPage/>}
         {view === "workers" && (
           <section className="page-grid">
