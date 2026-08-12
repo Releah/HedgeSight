@@ -177,6 +177,11 @@ type AuthenticationSettings = {
     enabled: boolean;
     automaticProvisioning: boolean;
     defaultRole: "viewer" | "operator" | "admin";
+    groupClaim: string;
+    requestedScopes: string;
+    viewerGroups: string[];
+    operatorGroups: string[];
+    adminGroups: string[];
     issuerUrl: string | null;
     clientId: string | null;
     clientIdConfigured: boolean;
@@ -1713,6 +1718,11 @@ export function PrivateApp({
         localAccountsEnabled: data.get("localAccountsEnabled") === "on",
         automaticProvisioning: data.get("automaticProvisioning") === "on",
         defaultRole: data.get("defaultRole"),
+        groupClaim: data.get("groupClaim"),
+        requestedScopes: data.get("requestedScopes"),
+        viewerGroups: String(data.get("viewerGroups")??"").split(",").map(value=>value.trim()).filter(Boolean),
+        operatorGroups: String(data.get("operatorGroups")??"").split(",").map(value=>value.trim()).filter(Boolean),
+        adminGroups: String(data.get("adminGroups")??"").split(",").map(value=>value.trim()).filter(Boolean),
         issuerUrl: data.get("issuerUrl"),
         clientId: data.get("clientId"),
         clientSecret: data.get("clientSecret"),
@@ -3246,8 +3256,17 @@ export function PrivateApp({
                         <select name="defaultRole" defaultValue={authenticationSettings?.oidc.defaultRole ?? "viewer"}>
                           <option value="viewer">Viewer — read-only</option><option value="operator">Operator — operational access</option><option value="admin">Administrator — full access</option>
                         </select>
-                        <small>Viewer is recommended. Existing accounts keep their current role when their identity is linked.</small>
+                        <small>Viewer is recommended. Existing local-password accounts keep their manually assigned role.</small>
                       </label>
+                      <fieldset className="oidc-group-mapping">
+                        <legend>Group claim role mapping</legend>
+                        <p>Optional. Map groups supplied by Authentik or another OIDC provider. Administrator takes precedence, followed by Operator and Viewer.</p>
+                        <label>Requested scopes<input name="requestedScopes" defaultValue={authenticationSettings?.oidc.requestedScopes ?? "openid email profile"} placeholder="openid email profile groups"/><small>Space-separated. Add the Authentik scope name that emits your group claim, for example <code>groups</code>.</small></label>
+                        <label>Group claim name<input name="groupClaim" defaultValue={authenticationSettings?.oidc.groupClaim ?? "groups"} placeholder="groups"/><small>The JSON claim containing the user's group-name array.</small></label>
+                        <label>Viewer groups<input name="viewerGroups" defaultValue={authenticationSettings?.oidc.viewerGroups?.join(", ") ?? ""} placeholder="HedgeSight Viewers"/><small>Comma-separated, case-insensitive group names.</small></label>
+                        <label>Operator groups<input name="operatorGroups" defaultValue={authenticationSettings?.oidc.operatorGroups?.join(", ") ?? ""} placeholder="HedgeSight Operators"/></label>
+                        <label>Administrator groups<input name="adminGroups" defaultValue={authenticationSettings?.oidc.adminGroups?.join(", ") ?? ""} placeholder="HedgeSight Administrators"/></label>
+                      </fieldset>
                       <label>
                         Issuer URL
                         <input

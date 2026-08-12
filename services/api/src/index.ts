@@ -36,14 +36,16 @@ app.get("/api/version", (_request, response) => {
 
 const credentialsSchema = z.object({ email: z.string().trim().email().max(254).transform(value => value.toLowerCase()), password: z.string().min(12).max(256) });
 const loginSchema = z.object({ identifier: z.string().trim().min(1).max(254), password: z.string().min(12).max(256) });
-type OidcRuntimeSettings = { enabled:boolean;localAccountsEnabled:boolean;automaticProvisioning:boolean;defaultRole:"viewer"|"operator"|"admin";issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
+type OidcRuntimeSettings = { enabled:boolean;localAccountsEnabled:boolean;automaticProvisioning:boolean;defaultRole:"viewer"|"operator"|"admin";groupClaim:string;requestedScopes:string;viewerGroups:string[];operatorGroups:string[];adminGroups:string[];issuerUrl:string|null;clientId:string|null;clientSecret:string|null;redirectUri:string|null;source:"database"|"environment" };
 async function loadOidcSettings(): Promise<OidcRuntimeSettings> {
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
-  const result=await pool.query(`SELECT enabled,local_accounts_enabled AS "localAccountsEnabled",automatic_provisioning AS "automaticProvisioning",default_role AS "defaultRole",issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
+  const result=await pool.query(`SELECT enabled,local_accounts_enabled AS "localAccountsEnabled",automatic_provisioning AS "automaticProvisioning",default_role AS "defaultRole",group_claim AS "groupClaim",requested_scopes AS "requestedScopes",viewer_groups AS "viewerGroups",operator_groups AS "operatorGroups",admin_groups AS "adminGroups",issuer_url AS "issuerUrl",client_id AS "clientId",redirect_uri AS "redirectUri",
     CASE WHEN client_secret_encrypted IS NULL THEN NULL ELSE pgp_sym_decrypt(client_secret_encrypted,$1) END AS "clientSecret" FROM oidc_settings WHERE singleton=true`,[key]);
   if(result.rowCount)return {...result.rows[0],source:"database"};
-  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,automaticProvisioning:true,defaultRole:"viewer",issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
+  return {enabled:Boolean(process.env.OIDC_ISSUER_URL&&process.env.OIDC_CLIENT_ID&&process.env.OIDC_REDIRECT_URI),localAccountsEnabled:true,automaticProvisioning:true,defaultRole:"viewer",groupClaim:"groups",requestedScopes:"openid email profile",viewerGroups:[],operatorGroups:[],adminGroups:[],issuerUrl:process.env.OIDC_ISSUER_URL||null,clientId:process.env.OIDC_CLIENT_ID||null,clientSecret:process.env.OIDC_CLIENT_SECRET||null,redirectUri:process.env.OIDC_REDIRECT_URI||null,source:"environment"};
 }
+function oidcGroups(claims:Record<string,unknown>,claim:string){const value=claims[claim];return (Array.isArray(value)?value:typeof value==="string"?value.split(/[ ,]+/):[]).filter((item):item is string=>typeof item==="string").map(item=>item.trim().toLowerCase()).filter(Boolean);}
+function oidcRole(settings:OidcRuntimeSettings,claims:Record<string,unknown>){const groups=new Set(oidcGroups(claims,settings.groupClaim)),matches=(configured:string[])=>configured.some(group=>groups.has(group.toLowerCase()));return matches(settings.adminGroups)?"admin":matches(settings.operatorGroups)?"operator":matches(settings.viewerGroups)?"viewer":settings.defaultRole;}
 let oidcConfiguration: { key:string; value:Promise<oidc.Configuration> } | null = null;
 async function discoverOidc(settings:Pick<OidcRuntimeSettings,"issuerUrl"|"clientId"|"clientSecret">){
   if(!settings.issuerUrl||!settings.clientId)throw new Error("Issuer URL and client ID are required");
@@ -113,7 +115,7 @@ app.get("/api/auth/oidc/start", async (request, response) => {
   const state = oidc.randomState();
   await pool.query("DELETE FROM oidc_flows WHERE expires_at<=now()");
   await pool.query("INSERT INTO oidc_flows(state_hash,code_verifier,expires_at) VALUES($1,$2,now()+interval '10 minutes')", [hashToken(state), verifier]);
-  const url = oidc.buildAuthorizationUrl(await getOidcConfiguration(settings), { redirect_uri: settings.redirectUri, scope: "openid email profile", state, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: "S256" });
+  const url = oidc.buildAuthorizationUrl(await getOidcConfiguration(settings), { redirect_uri: settings.redirectUri, scope: settings.requestedScopes, state, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: "S256" });
   return response.redirect(url.href);
   } catch(error) {
     await writeSystemLog("error","api","oidc-start",error instanceof Error?error.message:String(error),{});
@@ -132,16 +134,16 @@ app.get("/api/auth/oidc/callback", async (request, response) => {
     const configuration=await getOidcConfiguration(settings),tokens = await oidc.authorizationCodeGrant(configuration, callback, { pkceCodeVerifier: flow.rows[0].code_verifier, expectedState: request.query.state });
     const tokenClaims=tokens.claims();if(!tokenClaims?.sub)return response.redirect("/login?error=claims");
     let claims:Record<string,unknown>={...tokenClaims};
-    if(typeof claims.email!=="string"&&tokens.access_token){try{claims={...claims,...await oidc.fetchUserInfo(configuration,tokens.access_token,tokenClaims.sub)};}catch{/* Missing UserInfo is reported as a missing email claim below. */}}
+    if(tokens.access_token){try{claims={...claims,...await oidc.fetchUserInfo(configuration,tokens.access_token,tokenClaims.sub)};}catch{/* Providers may return all required claims in the ID token. */}}
     if(typeof claims.email!=="string")return response.redirect("/login?error=email");
     const issuer=typeof tokenClaims.iss==="string"?tokenClaims.iss:settings.issuerUrl,email=claims.email.toLowerCase(),displayName=typeof claims.name==="string"?claims.name:typeof claims.preferred_username==="string"?claims.preferred_username:email;
-    const existing=await pool.query("SELECT id,enabled,oidc_issuer,oidc_subject FROM users WHERE lower(email)=lower($1)",[email]);
+    const role=oidcRole(settings,claims),existing=await pool.query("SELECT id,enabled,password_hash,oidc_issuer,oidc_subject FROM users WHERE lower(email)=lower($1)",[email]);
     if(existing.rowCount&&!existing.rows[0].enabled)return response.redirect("/login?error=disabled");
     if(existing.rowCount&&existing.rows[0].oidc_subject&&(existing.rows[0].oidc_issuer!==issuer||existing.rows[0].oidc_subject!==tokenClaims.sub))return response.redirect("/login?error=link");
     if(!existing.rowCount&&!settings.automaticProvisioning)return response.redirect("/login?error=provisioning");
     const user=existing.rowCount
-      ?await pool.query("UPDATE users SET display_name=$2,oidc_issuer=$3,oidc_subject=$4,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id",[existing.rows[0].id,displayName,issuer,tokenClaims.sub])
-      :await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,role,last_login_at) VALUES($1,$2,$3,$4,$5,now()) RETURNING id`,[email,displayName,issuer,tokenClaims.sub,settings.defaultRole]);
+      ?await pool.query("UPDATE users SET display_name=$2,oidc_issuer=$3,oidc_subject=$4,role=CASE WHEN password_hash IS NULL THEN $5 ELSE role END,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id",[existing.rows[0].id,displayName,issuer,tokenClaims.sub,role])
+      :await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,role,last_login_at) VALUES($1,$2,$3,$4,$5,now()) RETURNING id`,[email,displayName,issuer,tokenClaims.sub,role]);
     await createSession(request,response,user.rows[0].id);return response.redirect("/#overview");
   }catch(error){await writeSystemLog("error","api","oidc-callback",error instanceof Error?error.message:String(error),{});return response.redirect("/login?error=provider");}
 });
@@ -248,14 +250,14 @@ app.get("/api/settings/authentication", async (request, response) => {
   const settings=await loadOidcSettings();
   response.json({
     localAccountsEnabled: settings.localAccountsEnabled,
-    oidc: { enabled: settings.enabled, automaticProvisioning:settings.automaticProvisioning,defaultRole:settings.defaultRole,issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
+    oidc: { enabled: settings.enabled, automaticProvisioning:settings.automaticProvisioning,defaultRole:settings.defaultRole,groupClaim:settings.groupClaim,requestedScopes:settings.requestedScopes,viewerGroups:settings.viewerGroups,operatorGroups:settings.operatorGroups,adminGroups:settings.adminGroups,issuerUrl: settings.issuerUrl, clientId:settings.clientId, clientIdConfigured:Boolean(settings.clientId), clientSecretConfigured: Boolean(settings.clientSecret), redirectUri: settings.redirectUri,source:settings.source },
     sessionDays: Math.max(1, Number(process.env.SESSION_DAYS ?? 7)), cookieSecure: process.env.COOKIE_SECURE === "true", trustProxy: process.env.TRUST_PROXY === "true",
   });
 });
 
 app.put("/api/settings/authentication/oidc",async(request,response)=>{
   if(!requireAdmin(request,response))return;
-  const parsed=z.object({enabled:z.boolean(),localAccountsEnabled:z.boolean().default(true),automaticProvisioning:z.boolean().default(true),defaultRole:z.enum(["viewer","operator","admin"]).default("viewer"),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
+  const parsed=z.object({enabled:z.boolean(),localAccountsEnabled:z.boolean().default(true),automaticProvisioning:z.boolean().default(true),defaultRole:z.enum(["viewer","operator","admin"]).default("viewer"),groupClaim:z.string().trim().min(1).max(120).default("groups"),requestedScopes:z.string().trim().regex(/^openid(?: [A-Za-z0-9._:-]+)*$/).max(500).default("openid email profile"),viewerGroups:z.array(z.string().trim().min(1).max(200)).max(100).default([]),operatorGroups:z.array(z.string().trim().min(1).max(200)).max(100).default([]),adminGroups:z.array(z.string().trim().min(1).max(200)).max(100).default([]),issuerUrl:z.union([z.string().trim().url(),z.literal("")]),clientId:z.string().trim().max(500),clientSecret:z.string().max(2000).optional().default(""),redirectUri:z.union([z.string().trim().url(),z.literal("")])}).safeParse(request.body);
   if(!parsed.success)return response.status(400).json({error:"Enter valid issuer and callback URLs"});
   if(parsed.data.enabled&&(!parsed.data.issuerUrl||!parsed.data.clientId||!parsed.data.redirectUri))return response.status(400).json({error:"Issuer URL, client ID and callback URL are required when OIDC is enabled"});
   if(!parsed.data.localAccountsEnabled&&!parsed.data.enabled)return response.status(400).json({error:"Enable and configure OIDC before disabling local sign-in"});
@@ -265,11 +267,11 @@ app.put("/api/settings/authentication/oidc",async(request,response)=>{
   }
   const key=process.env.CONFIG_ENCRYPTION_KEY??"local-development-configuration-key-change-me";
   if(parsed.data.enabled){const current=await loadOidcSettings(),secret=parsed.data.clientSecret||current.clientSecret;if(!secret)return response.status(400).json({error:"Client secret is required for the confidential OIDC client"});try{await discoverOidc({issuerUrl:parsed.data.issuerUrl,clientId:parsed.data.clientId,clientSecret:secret});}catch(error){return response.status(400).json({error:`Provider discovery failed: ${error instanceof Error?error.message:"unable to contact issuer"}`});}}
-  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,local_accounts_enabled,automatic_provisioning,default_role,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
-    VALUES(true,$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),CASE WHEN $7='' THEN NULL ELSE pgp_sym_encrypt($7,$8) END,NULLIF($9,''),$10)
-    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,local_accounts_enabled=EXCLUDED.local_accounts_enabled,automatic_provisioning=EXCLUDED.automatic_provisioning,default_role=EXCLUDED.default_role,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
-    client_secret_encrypted=CASE WHEN $7='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
-    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.localAccountsEnabled,parsed.data.automaticProvisioning,parsed.data.defaultRole,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
+  await pool.query(`INSERT INTO oidc_settings(singleton,enabled,local_accounts_enabled,automatic_provisioning,default_role,group_claim,requested_scopes,viewer_groups,operator_groups,admin_groups,issuer_url,client_id,client_secret_encrypted,redirect_uri,updated_by)
+    VALUES(true,$1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),CASE WHEN $12='' THEN NULL ELSE pgp_sym_encrypt($12,$13) END,NULLIF($14,''),$15)
+    ON CONFLICT(singleton) DO UPDATE SET enabled=EXCLUDED.enabled,local_accounts_enabled=EXCLUDED.local_accounts_enabled,automatic_provisioning=EXCLUDED.automatic_provisioning,default_role=EXCLUDED.default_role,group_claim=EXCLUDED.group_claim,requested_scopes=EXCLUDED.requested_scopes,viewer_groups=EXCLUDED.viewer_groups,operator_groups=EXCLUDED.operator_groups,admin_groups=EXCLUDED.admin_groups,issuer_url=EXCLUDED.issuer_url,client_id=EXCLUDED.client_id,
+    client_secret_encrypted=CASE WHEN $12='' THEN oidc_settings.client_secret_encrypted ELSE EXCLUDED.client_secret_encrypted END,
+    redirect_uri=EXCLUDED.redirect_uri,updated_at=now(),updated_by=EXCLUDED.updated_by`,[parsed.data.enabled,parsed.data.localAccountsEnabled,parsed.data.automaticProvisioning,parsed.data.defaultRole,parsed.data.groupClaim,parsed.data.requestedScopes,parsed.data.viewerGroups,parsed.data.operatorGroups,parsed.data.adminGroups,parsed.data.issuerUrl,parsed.data.clientId,parsed.data.clientSecret,key,parsed.data.redirectUri,response.locals.user.id]);
   oidcConfiguration=null;
   return response.json({saved:true,tested:parsed.data.enabled});
 });
