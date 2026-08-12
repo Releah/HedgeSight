@@ -3284,7 +3284,7 @@ export function PrivateApp({
                         <select name="defaultRole" defaultValue={authenticationSettings?.oidc.defaultRole ?? "viewer"}>
                           <option value="viewer">Viewer — read-only</option><option value="operator">Operator — operational access</option><option value="admin">Administrator — full access</option>
                         </select>
-                        <small>Viewer is recommended. Existing local-password accounts keep their manually assigned role.</small>
+                        <small>Viewer is recommended. This role is used only when provisioning a new account; existing roles remain under HedgeSight administrator control.</small>
                       </label>
                       <fieldset className="oidc-group-mapping">
                         <legend>Group claim role mapping</legend>

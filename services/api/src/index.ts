@@ -143,12 +143,12 @@ app.get("/api/auth/oidc/callback", async (request, response) => {
     if(tokens.access_token){try{claims={...claims,...await oidc.fetchUserInfo(configuration,tokens.access_token,tokenClaims.sub)};}catch{/* Providers may return all required claims in the ID token. */}}
     if(typeof claims.email!=="string")return response.redirect("/login?error=email");
     const issuer=typeof tokenClaims.iss==="string"?tokenClaims.iss:settings.issuerUrl,email=claims.email.toLowerCase(),displayName=typeof claims.name==="string"?claims.name:typeof claims.preferred_username==="string"?claims.preferred_username:email;
-    const role=oidcRole(settings,claims),existing=await pool.query("SELECT id,enabled,password_hash,oidc_issuer,oidc_subject FROM users WHERE lower(email)=lower($1)",[email]);
+    const role=oidcRole(settings,claims),existing=await pool.query("SELECT id,enabled,oidc_issuer,oidc_subject FROM users WHERE lower(email)=lower($1)",[email]);
     if(existing.rowCount&&!existing.rows[0].enabled)return response.redirect("/login?error=disabled");
     if(existing.rowCount&&existing.rows[0].oidc_subject&&(existing.rows[0].oidc_issuer!==issuer||existing.rows[0].oidc_subject!==tokenClaims.sub))return response.redirect("/login?error=link");
     if(!existing.rowCount&&!settings.automaticProvisioning)return response.redirect("/login?error=provisioning");
     const user=existing.rowCount
-      ?await pool.query("UPDATE users SET display_name=$2,oidc_issuer=$3,oidc_subject=$4,role=CASE WHEN password_hash IS NULL THEN $5 ELSE role END,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id",[existing.rows[0].id,displayName,issuer,tokenClaims.sub,role])
+      ?await pool.query("UPDATE users SET display_name=$2,oidc_issuer=$3,oidc_subject=$4,last_login_at=now(),updated_at=now() WHERE id=$1 RETURNING id",[existing.rows[0].id,displayName,issuer,tokenClaims.sub])
       :await pool.query(`INSERT INTO users(email,display_name,oidc_issuer,oidc_subject,role,last_login_at) VALUES($1,$2,$3,$4,$5,now()) RETURNING id`,[email,displayName,issuer,tokenClaims.sub,role]);
     await createSession(request,response,user.rows[0].id);return response.redirect("/#overview");
   }catch(error){await writeSystemLog("error","api","oidc-callback",error instanceof Error?error.message:String(error),{});return response.redirect("/login?error=provider");}

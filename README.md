@@ -133,7 +133,7 @@ Copy the `issuer` value returned by that document into HedgeSight. **Test curren
 
 Automatic provisioning creates a HedgeSight account after a previously unknown user authenticates successfully and supplies an email address. The safe fallback role is **Viewer**, but it can be changed to Operator or Administrator.
 
-Optional group mapping accepts a configurable claim, normally `groups`, containing an array of group names. Configure comma-separated Viewer, Operator, and Administrator group names in HedgeSight. Matching is case-insensitive and precedence is Administrator, Operator, Viewer, then the fallback provisioning role. OIDC-only accounts resynchronise their role at login; accounts retaining a local password keep their manually assigned HedgeSight role.
+Optional group mapping accepts a configurable claim, normally `groups`, containing an array of group names. Configure comma-separated Viewer, Operator, and Administrator group names in HedgeSight. Matching is case-insensitive and precedence is Administrator, Operator, Viewer, then the fallback provisioning role. Group mapping selects the role only when a new account is provisioned. Once an account exists, its role is managed in HedgeSight and is not overwritten by subsequent OIDC logins.
 
 For Authentik, add or select a scope/property mapping that emits group names, add that mapping's scope name to HedgeSight's requested scopes, and set the corresponding group claim name. A typical configuration is:
 
